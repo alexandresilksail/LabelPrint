@@ -92,15 +92,24 @@ def sign_payload(payload: dict) -> str:
 
 
 def verify_payload(public_key_b64: str, payload: dict, signature_b64: str) -> bool:
-    """客户端验签。"""
+    """客户端验签。任何结构/签名问题都返回 False（不抛异常）。"""
     try:
-        raw = base64.b64decode(public_key_b64)
-        sig = base64.b64decode(signature_b64)
+        raw = base64.b64decode(public_key_b64, validate=True)
+        sig = base64.b64decode(signature_b64, validate=True)
         key = Ed25519PublicKey.from_public_bytes(raw)
         key.verify(sig, canonical_payload(payload))
         return True
-    except (ValueError, InvalidSignature, Exception):
+    except (ValueError, InvalidSignature):
         return False
+
+
+def _utc_iso(dt: datetime) -> str:
+    """naive UTC -> ISO 8601（显式 Z 后缀）。
+
+    expires_at 等库内时间为 naive UTC，直接 astimezone 会按本地时区
+    解释导致偏移错误，故手动拼接 Z。
+    """
+    return dt.replace(tzinfo=timezone.utc).isoformat(timespec="seconds")
 
 
 def issue_credential(*, user_id: int, subscription_status: str,
@@ -114,9 +123,8 @@ def issue_credential(*, user_id: int, subscription_status: str,
         "subscription_status": subscription_status,
         "plan_code": plan_code,
         "device_id": device_id,
-        "issued_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "expires_at": expires_at.astimezone(timezone.utc)
-        .isoformat(timespec="seconds"),
+        "issued_at": _utc_iso(datetime.now(timezone.utc).replace(tzinfo=None)),
+        "expires_at": _utc_iso(expires_at),
     }
     return {
         "license_id": license_id,

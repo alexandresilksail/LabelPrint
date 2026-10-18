@@ -1,0 +1,13 @@
+=== CodeLabelStudio 阶段 4-8 测试记录（客户端 + 服务端） ===
+日期: 2026-10-18 16:09:26
+Python: Python 3.13.14
+
+### 客户端测试（tests/） ###
+Ran 143 tests in 8.687s
+
+OK (skipped=1)
+
+### 服务端测试（tests_server/） ###
+Ran 84 tests in 51.040s
+
+OK

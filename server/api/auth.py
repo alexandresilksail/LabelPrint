@@ -10,7 +10,7 @@ from ..services.auth import (
     AuthError, change_password, forgot_password, login, logout,
     register, resend_verification, reset_password, verify_email,
 )
-from .deps import client_ip, get_current_user
+from .deps import get_current_user, request_client_ip
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -63,7 +63,7 @@ def api_register(payload: RegisterIn, request: Request,
     try:
         user = register(db, email=payload.email, username=payload.username,
                         password=payload.password,
-                        client_ip=client_ip())
+                        client_ip=request_client_ip(request))
     except AuthError as exc:
         raise _err(exc)
     return {"user_id": user.id, "username": user.username,
@@ -82,21 +82,22 @@ def api_verify_email(payload: VerifyEmailIn, db: Session = Depends(get_db)):
 
 
 @router.post("/resend-verification")
-def api_resend(payload: ForgotIn, db: Session = Depends(get_db)):
+def api_resend(payload: ForgotIn, request: Request,
+               db: Session = Depends(get_db)):
     try:
         resend_verification(db, email=payload.email,
-                            client_ip=client_ip())
+                            client_ip=request_client_ip(request))
     except AuthError as exc:
         raise _err(exc)
     return {"sent": True}
 
 
 @router.post("/login")
-def api_login(payload: LoginIn, db: Session = Depends(get_db)):
+def api_login(payload: LoginIn, request: Request, db: Session = Depends(get_db)):
     try:
         user, token = login(db, identifier=payload.identifier,
                             password=payload.password,
-                            client_ip=client_ip())
+                            client_ip=request_client_ip(request))
     except AuthError as exc:
         raise _err(exc)
     return {
@@ -117,9 +118,10 @@ def api_logout(request: Request, user: User = Depends(get_current_user),
 
 
 @router.post("/forgot-password")
-def api_forgot(payload: ForgotIn, db: Session = Depends(get_db)):
+def api_forgot(payload: ForgotIn, request: Request, db: Session = Depends(get_db)):
     try:
-        forgot_password(db, email=payload.email, client_ip=client_ip())
+        forgot_password(db, email=payload.email,
+                        client_ip=request_client_ip(request))
     except AuthError as exc:
         raise _err(exc)
     return {"sent": True}

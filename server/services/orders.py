@@ -22,7 +22,9 @@ ORDER_NO_PREFIX = "CLS"
 
 
 class OrderError(Exception):
-    pass
+    def __init__(self, message, status_code=400):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def list_enabled_plans(db: Session) -> list[Plan]:
@@ -69,8 +71,9 @@ def create_order(db: Session, user: User, *, plan_code: str) -> Order:
 
 def get_order(db: Session, user: User, order_id: int) -> Order:
     order = db.get(Order, order_id)
+    # 统一 404：不透露订单是否存在（仅归属本人可见）
     if not order or order.user_id != user.id:
-        raise OrderError("订单不存在")
+        raise OrderError("订单不存在", status_code=404)
     return order
 
 
@@ -109,9 +112,10 @@ def confirm_payment(db: Session, *, order_id: int, admin: User,
         raise OrderError("确认付款必须填写原因")
     order = db.get(Order, order_id)
     if not order:
-        raise OrderError("订单不存在")
+        raise OrderError("订单不存在", status_code=404)
     if order.order_status in ("confirmed", "refunded", "canceled"):
-        raise OrderError(f"订单已终态（{order.order_status}），不能重复确认")
+        raise OrderError(f"订单已终态（{order.order_status}），不能重复确认",
+                         status_code=409)
 
     now = utc_now()
     if approved:

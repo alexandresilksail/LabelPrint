@@ -2,7 +2,8 @@
 
 - 密码：Argon2id（argon2-cffi），不明文存储、不入日志；
 - 会话/验证/重置令牌：URL 安全随机数，库内仅存 SHA-256 哈希；
-- 限流：进程内固定窗口（按 IP + 路由），生产建议改用 Redis。
+- 限流：进程内固定窗口（按 IP + 路由），生产建议改用 Redis；
+- 时间统一使用 naive UTC（与 models.utcnow 一致，避免 aware/naive 混用）。
 """
 
 import hashlib
@@ -54,7 +55,8 @@ def constant_time_eq(a: str, b: str) -> bool:
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    """naive UTC（与数据库 DateTime 列一致，禁止 aware/naive 混用）。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # ---------- 限流 ----------

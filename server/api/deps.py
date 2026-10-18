@@ -1,6 +1,6 @@
 """FastAPI 依赖：认证、管理员鉴权、限流辅助。"""
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from ..app.database import get_db
@@ -27,9 +27,13 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-def client_ip(x_forwarded_for: str = Header(default=""),
-              x_real_ip: str = Header(default="")) -> str:
-    # 反向代理场景取 X-Forwarded-For 首个；直连取 X-Real-IP
-    if x_forwarded_for:
-        return x_forwarded_for.split(",")[0].strip()
-    return x_real_ip or "unknown"
+def request_client_ip(request: Request) -> str:
+    """提取客户端 IP：优先 X-Forwarded-For 首个（反向代理场景），
+    其次 X-Real-IP，最后 request.client.host。"""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    real = request.headers.get("x-real-ip", "")
+    if real:
+        return real.strip()
+    return request.client.host if request.client else "unknown"

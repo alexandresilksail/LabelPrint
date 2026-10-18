@@ -54,9 +54,10 @@ def _default_trial_plan(db: Session):
     from ..app.models import Plan
     plan = db.scalar(select(Plan).where(Plan.plan_code == "trial"))
     if plan is None:
+        # enabled=False：内部占位计划，不对外售卖（/api/plans 只列 enabled）
         plan = Plan(plan_code="trial", plan_name="免费试用",
                     billing_period="trial", price=0, currency="CNY",
-                    enabled=True)
+                    enabled=False)
         db.add(plan)
         db.flush()
     return plan

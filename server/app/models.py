@@ -10,7 +10,7 @@
 - 关键业务表带唯一约束与状态 CHECK（幂等与防重复）。
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -47,7 +47,9 @@ class User(Base):
 
     trial = relationship("Trial", back_populates="user", uselist=False)
     subscriptions = relationship("Subscription", back_populates="user")
-    orders = relationship("Order", back_populates="user")
+    # Order 有 user_id / confirmed_by 两个指向 users 的外键，必须显式指定
+    orders = relationship("Order", back_populates="user",
+                          foreign_keys="Order.user_id")
     devices = relationship("Device", back_populates="user")
     sessions = relationship("Session", back_populates="user")
 

@@ -4,11 +4,12 @@
 所有操作写 audit_logs（操作人、目标、时间、原因、摘要）。
 """
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
 from ..app.database import get_db
 from ..app.models import (
     AuditLog, Device, License, Order, Subscription, Trial, User,
@@ -24,11 +25,23 @@ from .deps import require_admin
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 
+def _pagination(page: int, size: int) -> tuple[int, int]:
+    """分页参数边界校验，防负 offset / 超大 page size。"""
+    if page < 1:
+        page = 1
+    if size < 1:
+        size = 1
+    if size > 100:
+        size = 100
+    return page, size
+
+
 # ---------- 用户 ----------
 @router.get("/users")
 def api_admin_users(q: str = Query(default=""), status: str = Query(default=""),
                     page: int = 1, size: int = 20,
                     db: Session = Depends(get_db)):
+    page, size = _pagination(page, size)
     stmt = select(User)
     if q:
         like = f"%{q}%"
@@ -143,6 +156,7 @@ def api_admin_extend_trial(user_id: int, payload: ExtendTrialIn,
 def api_admin_orders(status: str = Query(default=""),
                      page: int = 1, size: int = 20,
                      db: Session = Depends(get_db)):
+    page, size = _pagination(page, size)
     stmt = select(Order)
     if status:
         stmt = stmt.where(Order.order_status == status)
@@ -178,7 +192,7 @@ def api_admin_confirm_payment(order_id: int, payload: ConfirmPaymentIn,
                                 approved=payload.approved,
                                 reason=payload.reason)
     except OrderError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
     return {"order_status": order.order_status}
 
 
@@ -263,7 +277,8 @@ def api_admin_stats(db: Session = Depends(get_db)):
         "expired_subscriptions": expired,
         "orders_pending": orders_pending,
         "orders_confirmed": orders_confirmed,
-        "confirmed_revenue": str(revenue),
+        # 统一两位小数（空值时也是 0.00）
+        "confirmed_revenue": f"{Decimal(str(revenue)):.2f}",
         "generated_at": now.isoformat() + "Z",
     }
 
@@ -271,6 +286,7 @@ def api_admin_stats(db: Session = Depends(get_db)):
 @router.get("/audit-logs")
 def api_admin_audit_logs(page: int = 1, size: int = 50,
                          db: Session = Depends(get_db)):
+    page, size = _pagination(page, size)
     total = db.scalar(select(func.count()).select_from(AuditLog)) or 0
     logs = list(db.scalars(
         select(AuditLog).order_by(AuditLog.id.desc())

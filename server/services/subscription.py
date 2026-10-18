@@ -102,14 +102,24 @@ def suspend_subscription(db: Session, user: User, *, reason: str) -> Subscriptio
     return sub
 
 
+def _restored_status(sub: Subscription) -> str:
+    """暂停恢复后的状态：未到期则按订阅类型回到原状态。
+
+    试用订阅（引用 trial 计划）恢复为 trialing，付费订阅恢复为 active；
+    已到期一律 expired。
+    """
+    if sub.expires_at < utc_now():
+        return "expired"
+    if sub.plan is not None and sub.plan.plan_code == "trial":
+        return "trialing"
+    return "active"
+
+
 def resume_subscription(db: Session, user: User) -> Subscription:
     sub = get_subscription(db, user)
     if not sub:
         raise SubscriptionError("该用户没有订阅记录")
-    if sub.expires_at < utc_now():
-        sub.status = "expired"
-    else:
-        sub.status = "active"
+    sub.status = _restored_status(sub)
     db.commit()
     db.refresh(sub)
     return sub
@@ -136,10 +146,7 @@ def adjust_subscription(db: Session, subscription_id: int, *,
     elif action == "suspend":
         sub.status = "suspended"
     elif action == "resume":
-        if sub.expires_at < utc_now():
-            sub.status = "expired"
-        else:
-            sub.status = "active"
+        sub.status = _restored_status(sub)
     else:
         raise SubscriptionError(f"未知调整动作: {action}")
     db.commit()

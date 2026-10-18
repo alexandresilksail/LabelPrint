@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ..app.config import settings
 from ..app.database import get_db
 from ..app.models import User
+from ..app.security import utc_now
 from ..services.license import (
     LicenseError, deactivate_device, list_devices,
 )
@@ -25,7 +27,7 @@ def api_me(user: User = Depends(get_current_user)):
         "account_status": user.account_status,
         "is_admin": user.is_admin,
         "created_at": user.created_at.isoformat() + "Z",
-        "server_time_utc": user.created_at.now().isoformat() + "Z",
+        "server_time_utc": utc_now().isoformat() + "Z",
     }
 
 
@@ -50,7 +52,7 @@ def api_my_devices(user: User = Depends(get_current_user),
             }
             for d in devices
         ],
-        "max_devices": 3,
+        "max_devices": settings.max_devices,
     }
 
 

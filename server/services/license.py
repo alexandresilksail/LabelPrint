@@ -10,7 +10,7 @@
 import secrets
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..app.config import settings
@@ -48,16 +48,10 @@ def activate_device(db: Session, user: User, *, fingerprint: str,
         db.refresh(device)
         return device
     active_count = db.scalar(
-        select(Device).where(Device.user_id == user.id,
-                             Device.status == "active")
-    )
-    # 简化计数
-    from sqlalchemy import func
-    count = db.scalar(
         select(func.count()).select_from(Device).where(
             Device.user_id == user.id, Device.status == "active")
     )
-    if count >= settings.max_devices:
+    if active_count >= settings.max_devices:
         raise LicenseError(
             f"已达到设备数量上限（{settings.max_devices}），"
             "请先解绑不使用的设备")
@@ -139,12 +133,22 @@ def issue_license(db: Session, user: User, device: Device) -> dict:
 def validate_license(db: Session, user: User, *, credential: dict) -> dict:
     """联网验证授权凭证。
 
-    核对：签名由客户端本地完成；服务端核对 license 记录状态、
-    订阅/试用状态与设备绑定。撤销或过期即拒绝。
+    服务端防御（不依赖客户端诚实）：
+    1. 结构校验；
+    2. Ed25519 验签（服务端公钥）——篡改/伪造载荷一律拒绝；
+    3. 核对 license 记录状态、归属、设备绑定；
+    4. 核对订阅/试用状态（服务端计算，客户端不可伪造）；
+    5. 服务端时间到达即拒绝（客户端改本地时间无效）。
     """
     payload = credential.get("payload") if isinstance(credential, dict) else None
     if not payload or "license_id" not in payload:
         raise LicenseError("授权凭证结构非法")
+    # 服务端验签：载荷或签名被改动即拒绝（客户端只做本地预检）
+    from ..app.licensing import public_key_b64, verify_payload
+    signature = credential.get("signature")
+    if not signature or not verify_payload(
+            public_key_b64(), payload, signature):
+        raise LicenseError("授权凭证签名验证失败")
     lic = db.scalar(select(License).where(
         License.license_id == payload["license_id"]))
     if not lic or lic.user_id != user.id:

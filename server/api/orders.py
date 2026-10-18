@@ -43,7 +43,7 @@ def api_create_order(payload: CreateOrderIn,
     try:
         order = create_order(db, user, plan_code=payload.plan_code)
     except OrderError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
     return _order_dict(order)
 
 
@@ -59,7 +59,7 @@ def api_get_order(order_id: int, user: User = Depends(get_current_user),
     try:
         order = get_order(db, user, order_id)
     except OrderError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
     return _order_dict(order)
 
 
@@ -75,7 +75,7 @@ def api_payment_proof(order_id: int, payload: PaymentProofIn,
         order = submit_payment_proof(db, user, order_id,
                                      reference=payload.reference)
     except OrderError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
     return _order_dict(order)
 
 
