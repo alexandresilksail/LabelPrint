@@ -115,53 +115,74 @@ OK
 
 ## 8. GitHub 推送状态
 
-远端 `https://github.com/alexandresilksail/LabelPrint` 已有 1 个早期提交
-（`0027109`，68 个条目，README 3018 字节），本地当前 10 个提交、131 个受管文件、
-README 4721 字节 —— **远端落后 9 个提交**。
+**已推送完成。** 远端 `https://github.com/alexandresilksail/LabelPrint`（public，默认分支 `main`）
+当前 HEAD 为 `d0cf574`，含 132 个受管文件、README 与全部阶段文档。
 
-实测阻塞原因（两项，均为环境侧）：
+### 8.1 传输路径
+
+本环境 **git 协议端点 `github.com` 被网络策略阻断**，因此改用 REST API 传输：
 
 | 检查 | 结果 |
 |---|---|
 | `curl https://github.com` | `CONNECT tunnel failed, response 502`（代理隧道拒绝） |
-| `git ls-remote origin` | `schannel: failed to receive handshake`（TLS 握手失败） |
-| `curl https://api.github.com` | `200`（可达） |
-| `curl https://codeload.github.com` | `301`（可达） |
-| 此前两次 access token | 被环境密钥保护机制脱敏 / 已失效 |
+| `git ls-remote origin`（带有效令牌） | `fatal: Empty reply from server` |
+| `curl https://api.github.com/user` | `200`，令牌鉴权通过 |
+| `curl https://api.github.com/repos/.../git/trees` | `200`（可达） |
 
-即：**git 协议端点 github.com 被网络策略阻断**，即使有有效令牌也无法 `git push`；
-而 REST API 端点可达。因此提供三条可选路径：
+即令牌本身有效，纯粹是 git 传输端口不可达。改用 `scripts/push_via_api.py`
+经 api.github.com 逐文件创建 blob、组装 tree、创建 commit 并更新 `refs/heads/main`。
 
-### 路径 A（推荐）在可直连 GitHub 的机器上推送
+```
+$ python scripts/push_via_api.py
+目标仓库 alexandresilksail/LabelPrint / 分支 main
+仓库就绪：alexandresilksail/LabelPrint（私有=False）
+受管文件 132 个，正在上传 blob…
+  132/132
+tree 已创建：b948a583f9
+远端已有分支，将基于 0027109660 提交
+commit 已创建：d0cf574f38
+推送完成：https://github.com/alexandresilksail/LabelPrint/tree/main
+```
+
+### 8.2 内容一致性核验
+
+推送后逐文件比对远端 tree 与本地工作区：
+
+- 文件集合：本地 132 个受管文件 **全部存在**，无缺失
+- 字节大小：132 个文件 **全部一致**
+- 内容指纹（git blob SHA 抽样 11 个关键文件）：10 项一致；`docs/test_results_phase14.txt`
+  差异源于 Windows CRLF → 仓库 LF 的换行归一化（远端存的是原始字节，Git 检出时转换），内容 diff 为空
+
+### 8.3 历史形态说明
+
+API 传输不是 git 协议，**单次运行为一个快照提交**，故远端历史为：
+
+```
+d0cf574  推送路径补充：API 上传脚本 + bundle + 阻塞实测证据
+0027109  feat: Code Label Studio 条码核心与本地数据库（阶段1-2）
+```
+
+本地 13 次提交的完整历史保存在根目录外的 `LabelPrint-main.bundle`（`git bundle verify` 通过）。
+需要在 GitHub 上还原逐条历史时，在任何能直连 GitHub 的环境执行：
 
 ```bash
 git clone https://github.com/alexandresilksail/LabelPrint.git
 cd LabelPrint
-git bundle unbundle /path/to/LabelPrint-main.bundle     # 或 git pull <bundle> main
-git checkout main && git push origin main
+git fetch /path/to/LabelPrint-main.bundle main:local-history
+git push origin local-history:main --force     # 用完整历史替换快照提交
 ```
 
-### 路径 B 用本仓库的 API 推送脚本（需有效令牌）
+### 8.4 后续推送方式
 
-```bat
-set GITHUB_TOKEN=<你的令牌>
-python scripts\push_via_api.py alexandresilksail/LabelPrint main
-```
-
-脚本读取 `git ls-files` 内容，经 api.github.com 创建 blob/tree/commit 并更新
-`refs/heads/main`；已存在分支时以上一次远端提交为 parent（不丢远端历史），
-单次运行把本地多提交压成一个提交。
-
-### 路径 C 离线导入
-
-仓库根目录外已生成 `LabelPrint-main.bundle`（235 KB，`git bundle verify` 通过，
-记录完整历史至 `cb08cdf`），可在任意环境 `git clone` / `git fetch` 导入。
+本环境每次推送仍需走 API（`set GITHUB_TOKEN=... && python scripts\push_via_api.py`），
+脚本会以远端当前 HEAD 为 parent 追加提交，不会丢失远端历史。
 
 ## 9. 验收判定
 
 - **功能完整性**：规格 18 节所述功能全部实现并通过对应测试，无占位实现、无伪造通过。
 - **数据安全**：约束、迁移、备份恢复三条路径均有负向测试覆盖，恢复失败可回退。
 - **可交付性**：三件 Windows 产物可构建、可启动、可校验；文档齐备（部署/运维/备份/升级/安全/构建）。
-- **遗留风险**：仅安装交互流程需人工过一遍；GitHub 推送需用户侧凭据。
+- **遗留风险**：仅安装交互流程需人工过一遍（见 `docs/BUILD_REPORT.md` 第 6 节）。
+  GitHub 已推送完成，远端历史为快照形态，完整历史见 `LabelPrint-main.bundle`。
 
 **判定：通过验收，允许以"未签名首版"形式小范围交付。**

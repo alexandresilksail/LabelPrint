@@ -1,0 +1,3 @@
+cdee049cc6e2739ef2516fa06e2353bd4c3369f18902d1804393bcbbc15ebf6b  CodeLabelStudio.exe  (60,626,790 bytes)
+e8f0f5dd98cc72ba677296281bfc05e73278f03b9e470d53edba67996b922080  CodeLabelStudio-Portable.zip  (60,240,913 bytes)
+bc8d82c32095c9878706982866542a0e7bfff00b91a6f908f94f9a0414245a5f  CodeLabelStudio-Setup-1.0.0.exe  (122,193,480 bytes)
