@@ -56,17 +56,28 @@ def _git(*args: str, cwd: Path) -> str:
     return out.stdout
 
 
-def collect_files(root: Path) -> list[tuple[str, bytes]]:
-    """读取 HEAD 中所有受管文件的实际内容。"""
-    listing = _git("ls-files", "-z", cwd=root).split("\0")
-    files: list[tuple[str, bytes]] = []
-    for rel in listing:
+def collect_files(root: Path) -> list[tuple[str, bytes, str]]:
+    """读取 HEAD 中所有受管文件的内容与索引内记录的真实文件模式。
+
+    不能用 os.access(path, os.X_OK) 判断可执行位：Windows 上它几乎恒为真，
+    会把全部文件推成 100755，导致下游 clone 后所有文件都带可执行位。
+    """
+    listing = _git("ls-files", "-s", "-z", cwd=root).split("\0")
+    files: list[tuple[str, bytes, str]] = []
+    for entry in listing:
+        if not entry:
+            continue
+        # 格式：<mode> <sha> <stage>\t<path>
+        meta, _, rel = entry.partition("\t")
         if not rel:
             continue
+        mode = meta.split(" ", 1)[0] if meta else "100644"
+        if mode not in ("100644", "100755", "120000"):
+            mode = "100644"      # 子模块等特殊类型按普通文件处理
         path = root / rel
         if not path.is_file():
             continue
-        files.append((rel, path.read_bytes()))
+        files.append((rel, path.read_bytes(), mode))
     return files
 
 
@@ -95,7 +106,7 @@ def main() -> int:
     print(f"受管文件 {len(files)} 个，正在上传 blob…")
 
     tree_entries = []
-    for i, (rel, content) in enumerate(files, 1):
+    for i, (rel, content, mode) in enumerate(files, 1):
         status, blob = _request("POST", f"/repos/{repo}/git/blobs", token, {
             "content": base64.b64encode(content).decode("ascii"),
             "encoding": "base64",
@@ -105,7 +116,7 @@ def main() -> int:
             return 1
         tree_entries.append({
             "path": rel.replace("\\", "/"),
-            "mode": "100755" if os.access(root / rel, os.X_OK) else "100644",
+            "mode": mode,
             "type": "blob",
             "sha": blob["sha"],
         })
