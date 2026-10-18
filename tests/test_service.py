@@ -112,7 +112,8 @@ class TestImport(ServiceTestCase):
         self.assertIsNotNone(svc.get_record("96385074"))
         self.assertIsNotNone(svc.get_record("12345670"))
         self.assertIsNone(svc.get_record("96385075"))
-        self.assertEqual(svc.get_record("96385074")["source_type"], "import")
+        # v2 起导入记录同样走白名单来源校验，默认 internal（F-03/F-06）
+        self.assertEqual(svc.get_record("96385074")["source_type"], "internal")
 
 
 class TestStatusFlow(ServiceTestCase):

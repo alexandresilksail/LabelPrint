@@ -27,7 +27,7 @@ class TestSchema(DbTestCase):
     def test_schema_and_presets(self):
         db, _ = self.make_service()
         version = db.conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 1)
+        self.assertEqual(version, 2)  # v2：全字段 CHECK 约束 + 外键 + 授权来源列
         tables = {
             r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }

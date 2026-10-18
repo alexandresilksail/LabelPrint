@@ -13,15 +13,16 @@ class BarcodeRecordDAO:
 
     def insert(self, *, barcode_value, barcode_type, source_type="internal",
                allocation_status="generated", product_name=None, notes=None,
-               range_id=None, conn=None):
+               range_id=None, authorization_reference=None, conn=None):
         now = utc_now_iso()
         cur = _conn_of(self.db, conn).execute(
             """INSERT INTO barcode_records
-               (barcode_value, barcode_type, source_type, allocation_status,
-                product_name, notes, range_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (barcode_value, barcode_type, source_type, allocation_status,
-             product_name, notes, range_id, now, now),
+               (barcode_value, barcode_type, source_type, authorization_reference,
+                allocation_status, product_name, notes, range_id,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (barcode_value, barcode_type, source_type, authorization_reference,
+             allocation_status, product_name, notes, range_id, now, now),
         )
         return cur.lastrowid
 

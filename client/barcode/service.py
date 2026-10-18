@@ -5,6 +5,10 @@
 - gs1_authorized  : 用户合法取得的 GS1 授权范围，必须提供授权来源编号。
 
 本地去重只证明"本地未重复"，不代表全球唯一或已注册。
+
+安全设计（审计发现 F-03）：所有生成/导入入口统一经过 validate_source()
+业务校验；数据库层 CHECK 约束兜底，DAO 直写非法来源/状态会触发
+sqlite3.IntegrityError，无法绕过业务规则。
 """
 
 from ..barcode.checkdigit import (
@@ -18,10 +22,31 @@ from ..database.dao import (
     NumberingRangeDAO,
     OperationLogDAO,
 )
+from ..database.schema import VALID_SOURCE_TYPES
+
+DEFAULT_MAX_BATCH_SIZE = 10000
 
 
 class BarcodeError(Exception):
     """条码业务错误。"""
+
+
+def validate_source_type(source_type, authorization_reference=None):
+    """来源类型白名单校验 + GS1 授权凭据校验（全部入口统一使用）。
+
+    - source_type 必须在白名单内；
+    - gs1_authorized 必须提供非空授权来源编号；
+    - internal 不需要授权编号（提供了也不写入记录）。
+    """
+    if source_type not in VALID_SOURCE_TYPES:
+        allowed = ", ".join(VALID_SOURCE_TYPES)
+        raise BarcodeError(f"非法的编码来源类型: {source_type!r}（允许: {allowed}）")
+    if source_type == "gs1_authorized":
+        if not authorization_reference or not str(authorization_reference).strip():
+            raise BarcodeError(
+                "GS1 授权编码必须提供授权来源编号（authorization_reference）"
+            )
+    return source_type
 
 
 def _wrap_validation(exc):
@@ -29,8 +54,12 @@ def _wrap_validation(exc):
 
 
 class BarcodeService:
-    def __init__(self, db):
+    def __init__(self, db, *, max_batch_size=DEFAULT_MAX_BATCH_SIZE):
+        if isinstance(max_batch_size, bool) or not isinstance(max_batch_size, int) \
+                or max_batch_size < 1:
+            raise BarcodeError("max_batch_size 必须为正整数")
         self.db = db
+        self.max_batch_size = max_batch_size
         self.records = BarcodeRecordDAO(db)
         self.ranges = NumberingRangeDAO(db)
         self.logs = OperationLogDAO(db)
@@ -46,10 +75,9 @@ class BarcodeService:
         """
         if barcode_type not in BARCODE_LENGTHS:
             raise BarcodeError(f"不支持的条码类型: {barcode_type}")
-        if source_type not in ("internal", "gs1_authorized"):
-            raise BarcodeError(f"非法的编码来源类型: {source_type}")
-        if source_type == "gs1_authorized" and not authorization_reference:
-            raise BarcodeError("GS1 授权编码范围必须提供授权来源编号（authorization_reference）")
+        validate_source_type(source_type, authorization_reference)
+        if not range_name or not str(range_name).strip():
+            raise BarcodeError("编号范围名称不能为空")
         prefix = prefix or ""
         if prefix and any(not ("0" <= c <= "9") for c in prefix):
             raise BarcodeError("编号前缀必须为数字")
@@ -110,6 +138,7 @@ class BarcodeService:
             barcode_value=value,
             barcode_type=rng["barcode_type"],
             source_type=rng["source_type"],
+            authorization_reference=rng["authorization_reference"],
             allocation_status="generated",
             product_name=product_name,
             notes=notes,
@@ -126,10 +155,15 @@ class BarcodeService:
         return self.records.get(value, conn=conn)
 
     def generate_single(self, barcode_type, *, explicit_value=None, range_id=None,
-                        source_type="internal", product_name=None, notes=None):
-        """生成单个编码。必须且只能提供 explicit_value 或 range_id 之一。"""
+                        source_type="internal", authorization_reference=None,
+                        product_name=None, notes=None):
+        """生成单个编码。必须且只能提供 explicit_value 或 range_id 之一。
+
+        无论显式编码还是范围分配，来源类型都经过同一套业务校验。
+        """
         if (explicit_value is None) == (range_id is None):
             raise BarcodeError("必须且只能提供 explicit_value 或 range_id 之一")
+        validate_source_type(source_type, authorization_reference)
         try:
             with self.db.transaction(immediate=True) as conn:
                 if range_id is not None:
@@ -150,6 +184,7 @@ class BarcodeService:
                     barcode_value=value,
                     barcode_type=barcode_type,
                     source_type=source_type,
+                    authorization_reference=authorization_reference,
                     allocation_status="generated",
                     product_name=product_name,
                     notes=notes,
@@ -161,14 +196,24 @@ class BarcodeService:
             _wrap_validation(exc)
 
     def generate_batch(self, barcode_type, *, count, range_id,
-                       product_name=None, notes=None):
+                       product_name=None, notes=None,
+                       progress_callback=None, should_cancel=None):
         """从编号范围批量生成。
 
-        范围耗尽时安全停止：返回已生成部分，exhausted=True，
-        范围状态置为 exhausted，不会产生重复或越界编码。
+        - count 必须为 1..max_batch_size 的整数（拒绝 0/负/布尔/浮点/超限）；
+        - 单事务：失败（含数据库异常）整体回滚，不产生半成品记录；
+        - should_cancel() 返回 True 时安全停止：已生成部分提交保留，
+          返回 canceled=True（记录均有效且无重复）；
+        - 范围耗尽时安全停止：返回已生成部分，exhausted=True。
         """
-        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise BarcodeError("批量数量必须为整数")
+        if count < 1:
             raise BarcodeError("批量数量必须为正整数")
+        if count > self.max_batch_size:
+            raise BarcodeError(
+                f"单批数量 {count} 超过上限 {self.max_batch_size}，请分批执行"
+            )
         created = []
         with self.db.transaction(immediate=True) as conn:
             rng = self.ranges.get(range_id, conn=conn)
@@ -181,13 +226,24 @@ class BarcodeService:
             if rng["barcode_type"] != barcode_type:
                 raise BarcodeError("编号范围的条码类型与请求类型不一致")
             exhausted = False
-            for _ in range(count):
+            canceled = False
+            for i in range(count):
+                if should_cancel is not None and should_cancel():
+                    canceled = True
+                    break
                 if rng["next_number"] > rng["end_number"]:
                     self.ranges.set_status(range_id, "exhausted", conn=conn)
                     exhausted = True
                     break
                 created.append(self._allocate_from_range(rng, conn, product_name, notes))
-        return {"created": created, "requested": count, "exhausted": exhausted}
+                if progress_callback is not None:
+                    progress_callback(len(created), count)
+        return {
+            "created": created,
+            "requested": count,
+            "exhausted": exhausted,
+            "canceled": canceled,
+        }
 
     # ---------- 导入 ----------
     def validate_import(self, values, barcode_type):
@@ -218,8 +274,10 @@ class BarcodeService:
             report["valid"].append(value)
         return report
 
-    def import_records(self, values, barcode_type, *, source_type="import",
-                       product_name=None, notes=None):
+    def import_records(self, values, barcode_type, *, source_type="internal",
+                       authorization_reference=None, product_name=None, notes=None):
+        """批量导入。来源类型同样经过统一业务校验。"""
+        validate_source_type(source_type, authorization_reference)
         report = self.validate_import(values, barcode_type)
         with self.db.transaction(immediate=True) as conn:
             for value in report["valid"]:
@@ -227,6 +285,7 @@ class BarcodeService:
                     barcode_value=value,
                     barcode_type=barcode_type,
                     source_type=source_type,
+                    authorization_reference=authorization_reference,
                     allocation_status="generated",
                     product_name=product_name,
                     notes=notes,
