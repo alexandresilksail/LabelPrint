@@ -1,56 +1,166 @@
-CodeLabel Studio — 阶段 2 条码核心自动化测试记录
-运行时间: 2026-10-18 11:51:48    
-运行环境: Windows / Python 3.13.14 (managed) / python-barcode 0.16.1 (仅交叉验证，产品不依赖)
-命令: python -m unittest discover -s tests -t . -v
-================================================================
-test_all_lengths_defined (tests.test_checkdigit.TestCheckDigit.test_all_lengths_defined) ... ok
-test_calculate_check_digit (tests.test_checkdigit.TestCheckDigit.test_calculate_check_digit) ... ok
-test_calculate_partial_length_enforced (tests.test_checkdigit.TestCheckDigit.test_calculate_partial_length_enforced) ... ok
-test_known_valid_codes (tests.test_checkdigit.TestCheckDigit.test_known_valid_codes) ... ok
-test_non_digit_rejected (tests.test_checkdigit.TestCheckDigit.test_non_digit_rejected) ... ok
-test_normalize_autofill_check_digit (tests.test_checkdigit.TestCheckDigit.test_normalize_autofill_check_digit) ... ok
-test_unsupported_type_rejected (tests.test_checkdigit.TestCheckDigit.test_unsupported_type_rejected) ... ok
-test_wrong_check_digit_rejected (tests.test_checkdigit.TestCheckDigit.test_wrong_check_digit_rejected) ... ok
-test_wrong_length_rejected (tests.test_checkdigit.TestCheckDigit.test_wrong_length_rejected) ... ok
-test_backup_and_restore (tests.test_database.TestBackupRestore.test_backup_and_restore) ... ok
-test_concurrent_allocation_no_duplicates (tests.test_database.TestConcurrency.test_concurrent_allocation_no_duplicates) ... ok
-test_generate_logged (tests.test_database.TestOperationLogs.test_generate_logged) ... ok
-test_exhaustion_safe_stop (tests.test_database.TestRangeAllocation.test_exhaustion_safe_stop) ... ok
-test_range_value_format (tests.test_database.TestRangeAllocation.test_range_value_format) ... ok
-test_reopen_preserves_data_and_does_not_duplicate_presets (tests.test_database.TestSchema.test_reopen_preserves_data_and_does_not_duplicate_presets) ... ok
-test_schema_and_presets (tests.test_database.TestSchema.test_schema_and_presets) ... ok
-test_rollback_leaves_no_partial_write (tests.test_database.TestTransactionRollback.test_rollback_leaves_no_partial_write) ... ok
-test_duplicate_value_rejected (tests.test_database.TestUniqueConstraint.test_duplicate_value_rejected) ... ok
-test_cross_check_with_python_barcode (tests.test_encoder.TestCodeTables.test_cross_check_with_python_barcode) ... ok
-test_parity_table_complete (tests.test_encoder.TestCodeTables.test_parity_table_complete) ... ok
-test_table_internal_relationships (tests.test_encoder.TestCodeTables.test_table_internal_relationships)
+=== CodeLabelStudio 阶段 2 测试记录 ===
+日期: 2026-10-18 15:36:57
+Python: Python 3.13.14
+命令: python -m unittest discover -s tests -v
+范围: 全量客户端测试（阶段 1 数据完整性 + 阶段 2 渲染导出/模板/预览/PDF）
+----------------------------------------
+test_corrupted_database_rejected (test_backup_restore_hardened.TestRestoreRejections.test_corrupted_database_rejected) ... ok
+test_incompatible_version_rejected (test_backup_restore_hardened.TestRestoreRejections.test_incompatible_version_rejected) ... ok
+test_missing_file_rejected (test_backup_restore_hardened.TestRestoreRejections.test_missing_file_rejected) ... ok
+test_non_database_file_rejected (test_backup_restore_hardened.TestRestoreRejections.test_non_database_file_rejected) ... ok
+test_self_restore_rejected (test_backup_restore_hardened.TestRestoreRejections.test_self_restore_rejected) ... ok
+test_unrelated_schema_rejected (test_backup_restore_hardened.TestRestoreRejections.test_unrelated_schema_rejected) ... ok
+test_backup_verifies_destination (test_backup_restore_hardened.TestRestoreSuccess.test_backup_verifies_destination) ... ok
+test_restore_creates_pre_backup_and_log (test_backup_restore_hardened.TestRestoreSuccess.test_restore_creates_pre_backup_and_log) ... ok
+test_restore_v1_source_auto_migrates (test_backup_restore_hardened.TestRestoreSuccess.test_restore_v1_source_auto_migrates) ... ok
+test_cancel_after_n (test_batch_limits.TestBatchCancel.test_cancel_after_n) ... ok
+test_cancel_immediately (test_batch_limits.TestBatchCancel.test_cancel_immediately) ... ok
+test_cancel_without_callback_completes (test_batch_limits.TestBatchCancel.test_cancel_without_callback_completes) ... ok
+test_exhaustion_reports_flag (test_batch_limits.TestBatchExhaustionWithFlags.test_exhaustion_reports_flag) ... ok
+test_custom_limit_enforced (test_batch_limits.TestBatchLimits.test_custom_limit_enforced) ... ok
+test_invalid_counts_rejected (test_batch_limits.TestBatchLimits.test_invalid_counts_rejected) ... ok
+test_invalid_max_batch_size_rejected (test_batch_limits.TestBatchLimits.test_invalid_max_batch_size_rejected) ... ok
+test_over_default_limit_rejected (test_batch_limits.TestBatchLimits.test_over_default_limit_rejected) ... ok
+test_progress_callback_monotonic (test_batch_limits.TestBatchProgress.test_progress_callback_monotonic) ... ok
+test_all_lengths_defined (test_checkdigit.TestCheckDigit.test_all_lengths_defined) ... ok
+test_calculate_check_digit (test_checkdigit.TestCheckDigit.test_calculate_check_digit) ... ok
+test_calculate_partial_length_enforced (test_checkdigit.TestCheckDigit.test_calculate_partial_length_enforced) ... ok
+test_known_valid_codes (test_checkdigit.TestCheckDigit.test_known_valid_codes) ... ok
+test_non_digit_rejected (test_checkdigit.TestCheckDigit.test_non_digit_rejected) ... ok
+test_normalize_autofill_check_digit (test_checkdigit.TestCheckDigit.test_normalize_autofill_check_digit) ... ok
+test_unsupported_type_rejected (test_checkdigit.TestCheckDigit.test_unsupported_type_rejected) ... ok
+test_wrong_check_digit_rejected (test_checkdigit.TestCheckDigit.test_wrong_check_digit_rejected) ... ok
+test_wrong_length_rejected (test_checkdigit.TestCheckDigit.test_wrong_length_rejected) ... ok
+test_export_escapes_formula_cells (test_csvio.CsvRoundTripTestCase.test_export_escapes_formula_cells) ... ok
+  raw = open(path, "rb").read()
+ok
+  raw = open(path, "rb").read()
+ok
+  raw = open(path, "rb").read()
+ok
+test_missing_file (test_csvio.TestImportLimits.test_missing_file) ... ok
+test_too_large_rejected (test_csvio.TestImportLimits.test_too_large_rejected) ... ok
+  raw = open(path, "rb").read()
+ok
+  raw = open(path, "rb").read()
+ok
+test_formula_prefixes_escaped (test_csvio.TestSanitizeCell.test_formula_prefixes_escaped) ... ok
+test_negative_number_escaped (test_csvio.TestSanitizeCell.test_negative_number_escaped) ... ok
+test_safe_values_unchanged (test_csvio.TestSanitizeCell.test_safe_values_unchanged) ... ok
+test_backup_and_restore (test_database.TestBackupRestore.test_backup_and_restore) ... ok
+test_concurrent_allocation_no_duplicates (test_database.TestConcurrency.test_concurrent_allocation_no_duplicates) ... ok
+test_generate_logged (test_database.TestOperationLogs.test_generate_logged) ... ok
+test_exhaustion_safe_stop (test_database.TestRangeAllocation.test_exhaustion_safe_stop) ... ok
+test_range_value_format (test_database.TestRangeAllocation.test_range_value_format) ... ok
+test_reopen_preserves_data_and_does_not_duplicate_presets (test_database.TestSchema.test_reopen_preserves_data_and_does_not_duplicate_presets) ... ok
+test_schema_and_presets (test_database.TestSchema.test_schema_and_presets) ... ok
+test_rollback_leaves_no_partial_write (test_database.TestTransactionRollback.test_rollback_leaves_no_partial_write) ... ok
+test_duplicate_value_rejected (test_database.TestUniqueConstraint.test_duplicate_value_rejected) ... ok
+test_cross_check_with_python_barcode (test_encoder.TestCodeTables.test_cross_check_with_python_barcode) ... skipped 'python-barcode 未安装，跳过第三方交叉验证'
+test_parity_table_complete (test_encoder.TestCodeTables.test_parity_table_complete) ... ok
+test_table_internal_relationships (test_encoder.TestCodeTables.test_table_internal_relationships)
 EAN 码表内在关系：R = L 按位取反；G = R 反转。 ... ok
-test_guard_structure (tests.test_encoder.TestEncode.test_guard_structure) ... ok
-test_invalid_value_rejected (tests.test_encoder.TestEncode.test_invalid_value_rejected) ... ok
-test_module_counts (tests.test_encoder.TestEncode.test_module_counts) ... ok
-test_quiet_zone (tests.test_encoder.TestEncode.test_quiet_zone) ... ok
-test_upc_a_equals_ean13_with_leading_zero (tests.test_encoder.TestEncode.test_upc_a_equals_ean13_with_leading_zero) ... ok
-test_png_roundtrip (tests.test_encoder.TestRenderDecodeRoundtrip.test_png_roundtrip) ... ok
-test_render_rejects_bad_params (tests.test_encoder.TestRenderDecodeRoundtrip.test_render_rejects_bad_params) ... ok
-test_render_with_text_still_decodable (tests.test_encoder.TestRenderDecodeRoundtrip.test_render_with_text_still_decodable)
+test_guard_structure (test_encoder.TestEncode.test_guard_structure) ... ok
+test_invalid_value_rejected (test_encoder.TestEncode.test_invalid_value_rejected) ... ok
+test_module_counts (test_encoder.TestEncode.test_module_counts) ... ok
+test_quiet_zone (test_encoder.TestEncode.test_quiet_zone) ... ok
+test_upc_a_equals_ean13_with_leading_zero (test_encoder.TestEncode.test_upc_a_equals_ean13_with_leading_zero) ... ok
+test_png_roundtrip (test_encoder.TestRenderDecodeRoundtrip.test_png_roundtrip) ... ok
+test_render_rejects_bad_params (test_encoder.TestRenderDecodeRoundtrip.test_render_rejects_bad_params) ... ok
+test_render_with_text_still_decodable (test_encoder.TestRenderDecodeRoundtrip.test_render_with_text_still_decodable)
 带可读数字渲染时，按条码区波段解码仍应成功。 ... ok
-test_batch_count_must_be_positive (tests.test_service.TestGenerateBatch.test_batch_count_must_be_positive) ... ok
-test_batch_from_range (tests.test_service.TestGenerateBatch.test_batch_from_range) ... ok
-test_duplicate_rejected (tests.test_service.TestGenerateSingle.test_duplicate_rejected) ... ok
-test_exactly_one_source_required (tests.test_service.TestGenerateSingle.test_exactly_one_source_required) ... ok
-test_explicit_partial_autofill (tests.test_service.TestGenerateSingle.test_explicit_partial_autofill) ... ok
-test_gs1_range_requires_authorization (tests.test_service.TestGenerateSingle.test_gs1_range_requires_authorization) ... ok
-test_invalid_rejected_and_not_saved (tests.test_service.TestGenerateSingle.test_invalid_rejected_and_not_saved) ... ok
-test_range_type_mismatch_rejected (tests.test_service.TestGenerateSingle.test_range_type_mismatch_rejected) ... ok
-test_import_records_persists_valid_only (tests.test_service.TestImport.test_import_records_persists_valid_only) ... ok
-test_validate_import_categories (tests.test_service.TestImport.test_validate_import_categories) ... ok
-test_query_filters (tests.test_service.TestQuery.test_query_filters) ... ok
-test_stats (tests.test_service.TestQuery.test_stats) ... ok
-test_full_lifecycle (tests.test_service.TestStatusFlow.test_full_lifecycle) ... ok
-test_invalidate_keeps_history_and_blocks_reallocation (tests.test_service.TestStatusFlow.test_invalidate_keeps_history_and_blocks_reallocation) ... ok
-test_update_details_only_when_generated (tests.test_service.TestStatusFlow.test_update_details_only_when_generated) ... ok
+test_dirty_gs1_record_downgraded_with_audit (test_migration.TestMigrationEdgeCases.test_dirty_gs1_record_downgraded_with_audit)
+v1 脏数据：gs1_authorized 记录无范围、无授权编号。 ... ok
+test_gs1_range_without_reference_aborts_migration (test_migration.TestMigrationEdgeCases.test_gs1_range_without_reference_aborts_migration)
+v1 脏数据：gs1_authorized 编号范围缺少授权编号（仅可能来自手工篡改）。 ... ok
+test_constraints_active_after_migration (test_migration.TestMigrationPreservesData.test_constraints_active_after_migration) ... ok
+test_full_migration (test_migration.TestMigrationPreservesData.test_full_migration) ... ok
+test_migration_idempotent_reopen (test_migration.TestMigrationPreservesData.test_migration_idempotent_reopen) ... ok
+test_copies_multiplier (test_pdf.TestLabelSheetPdf.test_copies_multiplier) ... ok
+test_dropped_reported (test_pdf.TestLabelSheetPdf.test_dropped_reported) ... ok
+test_invalid_template_rejected (test_pdf.TestLabelSheetPdf.test_invalid_template_rejected) ... ok
+  boxes = mediaboxes(open(path, "rb").read())
+ok
+ok
+  boxes = mediaboxes(open(path, "rb").read())
+ok
+test_invalid_barcode_rejected (test_pdf.TestSinglePdf.test_invalid_barcode_rejected) ... ok
+test_no_text_variant (test_pdf.TestSinglePdf.test_no_text_variant) ... ok
+  boxes = mediaboxes(open(path, "rb").read())
+ok
+ok
+test_batch_count_must_be_positive (test_service.TestGenerateBatch.test_batch_count_must_be_positive) ... ok
+test_batch_from_range (test_service.TestGenerateBatch.test_batch_from_range) ... ok
+test_duplicate_rejected (test_service.TestGenerateSingle.test_duplicate_rejected) ... ok
+test_exactly_one_source_required (test_service.TestGenerateSingle.test_exactly_one_source_required) ... ok
+test_explicit_partial_autofill (test_service.TestGenerateSingle.test_explicit_partial_autofill) ... ok
+test_gs1_range_requires_authorization (test_service.TestGenerateSingle.test_gs1_range_requires_authorization) ... ok
+test_invalid_rejected_and_not_saved (test_service.TestGenerateSingle.test_invalid_rejected_and_not_saved) ... ok
+test_range_type_mismatch_rejected (test_service.TestGenerateSingle.test_range_type_mismatch_rejected) ... ok
+test_import_records_persists_valid_only (test_service.TestImport.test_import_records_persists_valid_only) ... ok
+test_validate_import_categories (test_service.TestImport.test_validate_import_categories) ... ok
+test_query_filters (test_service.TestQuery.test_query_filters) ... ok
+test_stats (test_service.TestQuery.test_stats) ... ok
+test_full_lifecycle (test_service.TestStatusFlow.test_full_lifecycle) ... ok
+test_invalidate_keeps_history_and_blocks_reallocation (test_service.TestStatusFlow.test_invalidate_keeps_history_and_blocks_reallocation) ... ok
+test_update_details_only_when_generated (test_service.TestStatusFlow.test_update_details_only_when_generated) ... ok
+test_empty_name_rejected (test_source_validation.TestCreateRangeSourceValidation.test_empty_name_rejected) ... ok
+test_invalid_source_rejected (test_source_validation.TestCreateRangeSourceValidation.test_invalid_source_rejected) ... ok
+test_dao_bad_length_rejected (test_source_validation.TestDAOBypassProtection.test_dao_bad_length_rejected) ... ok
+test_dao_gs1_without_reference_rejected (test_source_validation.TestDAOBypassProtection.test_dao_gs1_without_reference_rejected) ... ok
+test_dao_invalid_barcode_type_rejected (test_source_validation.TestDAOBypassProtection.test_dao_invalid_barcode_type_rejected) ... ok
+test_dao_invalid_source_type_rejected (test_source_validation.TestDAOBypassProtection.test_dao_invalid_source_type_rejected) ... ok
+test_dao_invalid_status_rejected (test_source_validation.TestDAOBypassProtection.test_dao_invalid_status_rejected) ... ok
+test_dao_non_digit_value_rejected (test_source_validation.TestDAOBypassProtection.test_dao_non_digit_value_rejected) ... ok
+test_dao_unknown_range_fk_rejected (test_source_validation.TestDAOBypassProtection.test_dao_unknown_range_fk_rejected) ... ok
+test_range_dao_constraints (test_source_validation.TestDAOBypassProtection.test_range_dao_constraints) ... ok
+test_explicit_gs1_with_reference_stored (test_source_validation.TestGenerateSingleSourceValidation.test_explicit_gs1_with_reference_stored) ... ok
+test_explicit_gs1_without_reference_rejected (test_source_validation.TestGenerateSingleSourceValidation.test_explicit_gs1_without_reference_rejected) ... ok
+test_explicit_invalid_source_rejected (test_source_validation.TestGenerateSingleSourceValidation.test_explicit_invalid_source_rejected) ... ok
+test_import_gs1_with_reference_ok (test_source_validation.TestImportSourceValidation.test_import_gs1_with_reference_ok) ... ok
+test_import_gs1_without_reference_rejected (test_source_validation.TestImportSourceValidation.test_import_gs1_without_reference_rejected) ... ok
+test_import_invalid_source_rejected (test_source_validation.TestImportSourceValidation.test_import_invalid_source_rejected) ... ok
+test_batch_from_gs1_range_stores_reference (test_source_validation.TestRangePropagatesAuthorization.test_batch_from_gs1_range_stores_reference) ... ok
+test_gs1_requires_reference (test_source_validation.TestValidateSourceType.test_gs1_requires_reference) ... ok
+test_internal_ignores_reference (test_source_validation.TestValidateSourceType.test_internal_ignores_reference) ... ok
+test_invalid_source_type_rejected (test_source_validation.TestValidateSourceType.test_invalid_source_type_rejected) ... ok
+test_whitelist (test_source_validation.TestValidateSourceType.test_whitelist) ... ok
+test_all_formats (test_svg.TestSvgStructure.test_all_formats) ... ok
+test_dimensions_match_meta (test_svg.TestSvgStructure.test_dimensions_match_meta) ... ok
+test_file_written (test_svg.TestSvgStructure.test_file_written) ... ok
+test_invalid_rejected (test_svg.TestSvgStructure.test_invalid_rejected) ... ok
+test_rect_count_matches_black_modules (test_svg.TestSvgStructure.test_rect_count_matches_black_modules) ... ok
+test_show_text_false (test_svg.TestSvgStructure.test_show_text_false) ... ok
+test_show_text_true_groups (test_svg.TestSvgStructure.test_show_text_true_groups) ... ok
+test_valid_xml_and_root (test_svg.TestSvgStructure.test_valid_xml_and_root) ... ok
+test_builtin_update_and_delete_protected (test_template_service.TestTemplateCRUD.test_builtin_update_and_delete_protected) ... ok
+test_copy_builtin (test_template_service.TestTemplateCRUD.test_copy_builtin) ... ok
+test_create_and_get (test_template_service.TestTemplateCRUD.test_create_and_get) ... ok
+test_create_duplicate_name_rejected (test_template_service.TestTemplateCRUD.test_create_duplicate_name_rejected) ... ok
+test_create_invalid_rejected (test_template_service.TestTemplateCRUD.test_create_invalid_rejected) ... ok
+test_delete_custom (test_template_service.TestTemplateCRUD.test_delete_custom) ... ok
+test_presets_loaded_from_db (test_template_service.TestTemplateCRUD.test_presets_loaded_from_db) ... ok
+test_restore_presets_idempotent (test_template_service.TestTemplateCRUD.test_restore_presets_idempotent) ... ok
+test_update_ok (test_template_service.TestTemplateCRUD.test_update_ok) ... ok
+test_assign_with_copies (test_templates.TestAssignItems.test_assign_with_copies) ... ok
+test_copies_fill (test_templates.TestAssignItems.test_copies_fill) ... ok
+test_overflow_dropped_counted (test_templates.TestAssignItems.test_overflow_dropped_counted) ... ok
+test_layout_slots_and_overflow (test_templates.TestComputeLayout.test_layout_slots_and_overflow) ... ok
+test_overflow_detected (test_templates.TestComputeLayout.test_overflow_detected) ... ok
+test_ean8_fits_small_label (test_templates.TestFitBarcode.test_ean8_fits_small_label) ... ok
+test_fit_on_wide_label (test_templates.TestFitBarcode.test_fit_on_wide_label) ... ok
+test_fit_warns_below_gs1_minimum (test_templates.TestFitBarcode.test_fit_warns_below_gs1_minimum) ... ok
+test_no_text_more_room (test_templates.TestFitBarcode.test_no_text_more_room) ... ok
+test_total_modules (test_templates.TestFitBarcode.test_total_modules) ... ok
+test_from_to_dict_roundtrip (test_templates.TestLabelTemplate.test_from_to_dict_roundtrip) ... ok
+test_offset_applied (test_templates.TestLabelTemplate.test_offset_applied) ... ok
+test_positions_within_page (test_templates.TestLabelTemplate.test_positions_within_page) ... ok
+test_validate_errors (test_templates.TestLabelTemplate.test_validate_errors) ... ok
+test_validate_warnings_overflow (test_templates.TestLabelTemplate.test_validate_warnings_overflow) ... ok
+test_four_presets (test_templates.TestPresets.test_four_presets) ... ok
+test_preset_grid_counts (test_templates.TestPresets.test_preset_grid_counts) ... ok
 
 ----------------------------------------------------------------------
-Ran 44 tests in 2.477s
+Ran 143 tests in 10.316s
 
-OK
+OK (skipped=1)

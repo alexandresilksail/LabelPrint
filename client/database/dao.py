@@ -163,6 +163,66 @@ class PrintTemplateDAO:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_by_name(self, name, *, conn=None):
+        row = _conn_of(self.db, conn).execute(
+            "SELECT * FROM print_templates WHERE template_name = ?", (name,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    _COLS = (
+        "template_name", "paper_width", "paper_height", "label_width",
+        "label_height", "rows", "columns", "margins", "horizontal_gap",
+        "vertical_gap", "orientation", "barcode_height", "show_text",
+        "copies", "offset_x", "offset_y", "builtin",
+    )
+
+    def insert(self, template, *, conn=None):
+        """template: LabelTemplate 实例或 to_dict() 结果。"""
+        d = template.to_dict() if hasattr(template, "to_dict") else dict(template)
+        now = utc_now_iso()
+        cols = ", ".join(self._COLS)
+        marks = ", ".join("?" for _ in self._COLS)
+        params = [d.get(c) for c in self._COLS] + [now, now]
+        cur = _conn_of(self.db, conn).execute(
+            f"INSERT INTO print_templates ({cols}, created_at, updated_at)"
+            f" VALUES ({marks}, ?, ?)",
+            params,
+        )
+        return cur.lastrowid
+
+    def update(self, template_id, template, *, conn=None):
+        d = template.to_dict() if hasattr(template, "to_dict") else dict(template)
+        assignments = ", ".join(f"{c} = ?" for c in self._COLS)
+        params = [d.get(c) for c in self._COLS] + [utc_now_iso(), template_id]
+        cur = _conn_of(self.db, conn).execute(
+            f"UPDATE print_templates SET {assignments}, updated_at = ?"
+            f" WHERE id = ?",
+            params,
+        )
+        return cur.rowcount == 1
+
+    def delete(self, template_id, *, conn=None):
+        cur = _conn_of(self.db, conn).execute(
+            "DELETE FROM print_templates WHERE id = ? AND builtin = 0",
+            (template_id,),
+        )
+        return cur.rowcount == 1
+
+    def copy(self, template_id, new_name, *, conn=None):
+        """复制模板（含预置模板）为新名称。"""
+        src = self.get(template_id, conn=conn)
+        if not src:
+            raise ValueError(f"模板 {template_id} 不存在")
+        if self.get_by_name(new_name, conn=conn):
+            raise ValueError(f"模板名称已存在: {new_name}")
+        src = dict(src)
+        src.pop("id", None)
+        src.pop("created_at", None)
+        src.pop("updated_at", None)
+        src["template_name"] = new_name
+        src["builtin"] = 0
+        return self.insert(src, conn=conn)
+
 
 class OperationLogDAO:
     def __init__(self, db):
