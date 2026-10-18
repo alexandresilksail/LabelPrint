@@ -102,7 +102,7 @@ def api_login(payload: LoginIn, request: Request, db: Session = Depends(get_db))
         raise _err(exc)
     return {
         "access_token": token,
-        "token_type": "Bearer",
+        "token_type": "Bearer",  # nosec B105 - OAuth2 令牌类型标识，非密码
         "user": {"id": user.id, "username": user.username,
                  "email": user.email, "is_admin": user.is_admin},
     }

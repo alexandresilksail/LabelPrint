@@ -12,43 +12,63 @@
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| 1 | 项目审计 / 风险清单 / 实施计划 | ✅ 已完成（见 `docs/phase1_audit_report.md`） |
-| 2 | 条码核心：UPC-A / EAN-13 / EAN-8 校验位、编码、预览、SQLite、编号范围、批量生成、去重、状态机 | ✅ 代码完成，自动化测试通过（见 `docs/test_results_phase2.txt`） |
-| 3 | 打印与导出：PDF / SVG / CSV、多尺寸标签模板、打印预览与校准 | ⏳ 待开始 |
-| 4 | 用户认证：注册、邮箱验证、登录、密码哈希、会话 | ⏳ 待开始 |
-| 5 | 试用与授权：7 天试用、授权校验、离线宽限、设备管理 | ⏳ 待开始 |
-| 6 | 管理员 Web 后台 | ⏳ 待开始 |
-| 7 | 支付接入（先人工付款确认，后接真实服务商） | ⏳ 待开始 |
-| 8 | 集成测试 | ⏳ 待开始 |
-| 9 | Windows 发布：安装版 / 绿色便携版 / 卸载程序 | ⏳ 待开始 |
+| 1 | 项目审计 / 风险清单 / 实施计划 | ✅ 已完成（见 `docs/FINAL_AUDIT_REPORT.md`） |
+| 2 | 数据完整性：schema v2 迁移、CHECK 约束、GS1 来源统一校验、批量上限/取消/进度、备份恢复加固 | ✅ 已完成（`docs/test_results_phase1.txt`） |
+| 3 | 打印与导出：PDF / SVG / PNG / CSV、4+ 套标签模板、打印预览与越界警告 | ✅ 已完成（`docs/test_results_phase2.txt`） |
+| 4 | 在线服务端：注册/邮箱验证/登录、7 天试用、订阅、订单、人工付款确认、管理后台 API、Alembic 迁移 | ✅ 已完成（`docs/test_results_phase4.txt`） |
+| 5 | PySide6 桌面客户端：7 大页面、授权缓存与离线宽限、服务端 API 客户端 | ✅ 代码完成，UI 冒烟测试已编写（PySide6 安装后运行） |
+| 6 | 管理员 Web 后台（前端页面） | ⏳ 待开始（后端 API 已就绪） |
+| 7 | 安全审计：bandit 静态扫描 + 人工清单 | 🔄 进行中 |
+| 8 | Windows 发布：安装版 / 绿色便携版 / 卸载程序 | ⏳ 待开始 |
+| 9 | 部署文档：DEPLOYMENT / OPERATIONS / BACKUP_RESTORE / UPGRADE_ROLLBACK | ⏳ 待开始 |
 | 10 | 最终验收 | ⏳ 待开始 |
 
-## 快速开始（条码核心）
+## 快速开始
 
 ```bat
-cd CodeLabelStudio
-scripts\run_tests.bat
+REM 1) 安装依赖（建议虚拟环境）
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+
+REM 2) 运行全部测试（客户端 + 服务端）
+.venv\Scripts\python -m unittest discover -s tests -t .
+.venv\Scripts\python -m unittest discover -s tests_server -t .
+
+REM 3) 启动桌面客户端
+.venv\Scripts\python run_client.py
+
+REM 4) 启动服务端（开发模式）
+cd server && ..\.venv\Scripts\python -m uvicorn main:app --reload
 ```
 
-测试使用 Python 标准库（sqlite3 / zlib / unittest），无需安装第三方依赖。
-默认使用 `python`，可用环境变量指定解释器：`set PYTHON=C:\path\to\python.exe`。
+条码编码核心（`client/barcode/`）仅依赖 Python 标准库，可独立测试。
 
 ## 目录结构
 
 ```
 CodeLabelStudio/
-├── client/            # Windows 桌面客户端
-│   ├── barcode/       # 条码核心：校验位 / 编码 / 渲染 / 解码（已实现）
-│   ├── database/      # SQLite：schema / DAO / 事务 / 备份（已实现）
-│   ├── app/ ui/ printing/ auth/ licensing/  # 阶段 3-5
+├── client/                  # Windows 桌面客户端
+│   ├── barcode/             # 条码核心：校验位/编码/渲染/解码/CSV/SVG
+│   ├── database/            # SQLite：schema v2 / DAO / 事务 / 备份恢复
+│   ├── printing/            # 标签模板 / 版面几何 / PDF
+│   ├── auth/                # 会话存储 + 服务端 API 客户端
+│   ├── licensing/           # 授权缓存 + 离线宽限 + Ed25519 验签
+│   ├── ui/                  # PySide6：主题/组件/7 页面/主窗口
+│   ├── app/                 # QApplication 入口
 │   └── assets/
-├── server/            # 在线服务端 FastAPI（阶段 4 起）
-├── admin/             # 管理员 Web 后台（阶段 6 起）
-├── tests/             # 自动化测试（条码核心已通过）
-├── deploy/            # Docker Compose / Nginx（阶段 4 起填充）
-├── installer/         # Inno Setup（阶段 9）
-├── scripts/           # 构建与测试脚本
-└── docs/              # 审计报告 / 测试结果 / 文档
+├── server/                  # 在线服务端 FastAPI + Alembic 迁移
+│   ├── app/                 # config / database / security / models / licensing / mailer
+│   ├── services/            # auth / trial / subscription / license / orders
+│   ├── api/                 # auth / account / license / orders / admin
+│   └── migrations/          # Alembic versions
+├── admin/                   # 管理员 Web 后台（前端页面，规划中）
+├── tests/                   # 客户端自动化测试（含 UI 冒烟）
+├── tests_server/            # 服务端 API 集成 + 安全 + 迁移测试
+├── deploy/                  # Docker Compose / Nginx（规划中）
+├── installer/               # Inno Setup（阶段 8）
+├── scripts/                 # 构建与测试脚本
+├── run_client.py            # 桌面客户端启动器
+└── docs/                    # 审计报告 / 测试结果 / 文档
 ```
 
 ## 重要说明

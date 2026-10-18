@@ -1,8 +1,7 @@
-"""PySide6 界面层（阶段 3 起实现）。
+"""PySide6 界面层：主题、通用组件、页面与主窗口。
 
-规划页面（规格 4.x）：
-- 登录前界面 / 注册 / 登录 / 忘记密码
-- 首页（快速生成、最近记录、试用状态）
-- 条码生成 / 批量生成 / 编码管理 / 批量导入
-- 打印中心 / 导出中心 / 账号与订阅 / 设置
+注意：子模块按需导入（`from client.ui.main_window import MainWindow`），
+避免无 GUI 环境（如服务端测试）被迫安装 PySide6。
 """
+
+__all__ = ["main_window", "context", "theme", "widgets"]

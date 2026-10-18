@@ -3,9 +3,12 @@
 # 客户端（Windows 桌面端）
 # ============================================================
 PySide6>=6.6.0            # 桌面 UI（阶段 3 起使用）
-Pillow>=10.0.0            # 图像处理（阶段 3 起使用）
-ReportLab>=4.0.0          # 矢量 PDF 输出（阶段 3 起使用）
-pyinstaller>=6.3.0        # Windows 打包（阶段 9 使用）
+# Pillow 为可选依赖：条码 PNG 渲染使用内置零依赖实现
+# （client/barcode/pngio.py + renderer.py）；安装 Pillow 后可在
+# 打印预览中启用更高质量的图像缩放路径。
+# Pillow>=10.0.0
+ReportLab>=4.0.0          # 矢量 PDF 输出（阶段 2 起使用）
+pyinstaller>=6.3.0        # Windows 打包（阶段 12 使用）
 
 # 说明：UPC/EAN 编码核心为内置实现（client/barcode/encoder.py），
 # 已通过自动化"渲染 -> 扫描解码"往返测试验证，不强制依赖第三方条码库。

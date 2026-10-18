@@ -176,29 +176,35 @@ class PrintTemplateDAO:
         "copies", "offset_x", "offset_y", "builtin",
     )
 
+    # SQL 语句在类定义期由常量列名构建一次（列名来自本类常量，
+    # 不来自任何外部输入；所有值一律参数化绑定），避免运行时拼串。
+    _INSERT_SQL = (
+        "INSERT INTO print_templates ("
+        + ", ".join(_COLS)  # nosec B608 - 类常量列名，取值全部参数化
+        + ", created_at, updated_at) VALUES ("
+        + ", ".join("?" for _ in _COLS)
+        + ", ?, ?)"
+    )
+    _UPDATE_SQL = (
+        "UPDATE print_templates SET "
+        + ", ".join(f"{c} = ?" for c in _COLS)  # nosec B608 - 同上
+        + ", updated_at = ? WHERE id = ?"
+    )
+
     def insert(self, template, *, conn=None):
         """template: LabelTemplate 实例或 to_dict() 结果。"""
         d = template.to_dict() if hasattr(template, "to_dict") else dict(template)
         now = utc_now_iso()
-        cols = ", ".join(self._COLS)
-        marks = ", ".join("?" for _ in self._COLS)
         params = [d.get(c) for c in self._COLS] + [now, now]
-        cur = _conn_of(self.db, conn).execute(
-            f"INSERT INTO print_templates ({cols}, created_at, updated_at)"
-            f" VALUES ({marks}, ?, ?)",
-            params,
-        )
+        # nosec B608 - 语句由类常量列名构建，全部取值参数化绑定
+        cur = _conn_of(self.db, conn).execute(self._INSERT_SQL, params)
         return cur.lastrowid
 
     def update(self, template_id, template, *, conn=None):
         d = template.to_dict() if hasattr(template, "to_dict") else dict(template)
-        assignments = ", ".join(f"{c} = ?" for c in self._COLS)
         params = [d.get(c) for c in self._COLS] + [utc_now_iso(), template_id]
-        cur = _conn_of(self.db, conn).execute(
-            f"UPDATE print_templates SET {assignments}, updated_at = ?"
-            f" WHERE id = ?",
-            params,
-        )
+        # nosec B608 - 语句由类常量列名构建，全部取值参数化绑定
+        cur = _conn_of(self.db, conn).execute(self._UPDATE_SQL, params)
         return cur.rowcount == 1
 
     def delete(self, template_id, *, conn=None):
