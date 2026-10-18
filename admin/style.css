@@ -1,0 +1,199 @@
+/* CodeLabelStudio 管理后台样式 */
+
+:root {
+  --primary: #4f6bed;
+  --primary-dark: #3b53c4;
+  --danger: #dc2626;
+  --success: #1f9d55;
+  --warning: #d97706;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --bg: #f7f8fa;
+  --card: #ffffff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.error-text { color: var(--danger); min-height: 18px; font-size: 13px; }
+
+/* ---------- 登录 ---------- */
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.login-card h1 { margin: 0 0 4px; font-size: 22px; }
+.login-card p { margin: 0 0 12px; }
+.login-card label { font-size: 13px; color: var(--muted); }
+input, select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+}
+input:focus, select:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
+
+button {
+  font-family: inherit;
+  font-size: 14px;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+}
+button:hover { border-color: var(--primary); color: var(--primary); }
+.btn { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn:hover { background: var(--primary-dark); color: #fff; }
+.btn-danger { border-color: var(--danger); color: var(--danger); background: var(--card); }
+.btn-danger:hover { background: var(--danger); color: #fff; }
+.btn-ghost { border-color: transparent; background: transparent; color: var(--muted); }
+
+/* ---------- 主框架 ---------- */
+.topbar {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand { font-size: 17px; font-weight: 700; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 24px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+.tab {
+  border: none;
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  padding: 10px 16px;
+  color: var(--muted);
+}
+.tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+
+main { padding: 20px 24px; max-width: 1280px; margin: 0 auto; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ---------- 统计 ---------- */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+}
+.stat-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.stat-card .value { font-size: 26px; font-weight: 700; color: var(--primary); }
+.stat-card .label { color: var(--muted); margin-top: 4px; }
+
+/* ---------- 工具条与表格 ---------- */
+.toolbar { display: flex; gap: 10px; margin-bottom: 14px; }
+.toolbar input { flex: 1; max-width: 320px; }
+
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.grid th, .grid td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.grid th { background: #eef1fd; font-weight: 600; }
+.grid tr:last-child td { border-bottom: none; }
+.grid tbody tr:hover { background: #f9fafb; }
+
+.pager { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+
+/* ---------- 徽章 ---------- */
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.badge-success { background: #e7f6ee; color: var(--success); }
+.badge-warning { background: #fdf3e3; color: var(--warning); }
+.badge-danger { background: #fdeaea; color: var(--danger); }
+.badge-muted { background: #f3f4f6; color: var(--muted); }
+.badge-primary { background: #eef1fd; color: var(--primary); }
+
+/* ---------- 弹窗 ---------- */
+.dialog {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 480px;
+  max-width: 92vw;
+}
+.dialog::backdrop { background: rgba(17, 24, 39, 0.45); }
+.dialog h2 { margin-top: 0; }
+.dialog label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+.dialog input, .dialog select { width: 100%; }
+.dialog-actions { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; }
+
+#ud-body dl {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+#ud-body dt { color: var(--muted); }
+#ud-body dd { margin: 0; }
+#ud-body h3 { margin: 18px 0 8px; font-size: 14px; }
+
+/* ---------- Toast ---------- */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #111827;
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 99;
+}
+.toast.error { background: var(--danger); }
+.toast.success { background: var(--success); }

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeLabelStudio 管理后台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ========== 登录视图 ========== -->
+<div id="login-view" class="login-wrap hidden">
+  <form id="login-form" class="login-card">
+    <h1>CodeLabelStudio</h1>
+    <p class="muted">管理后台 · 仅管理员可登录</p>
+    <label>用户名 / 邮箱</label>
+    <input id="login-identifier" type="text" autocomplete="username" required>
+    <label>密码</label>
+    <input id="login-password" type="password" autocomplete="current-password" required>
+    <div id="login-error" class="error-text"></div>
+    <button type="submit" id="login-btn">登 录</button>
+  </form>
+</div>
+
+<!-- ========== 主视图 ========== -->
+<div id="app-view" class="hidden">
+  <header class="topbar">
+    <div class="brand">CodeLabelStudio <span class="muted">管理后台</span></div>
+    <div class="topbar-right">
+      <span id="admin-name" class="muted"></span>
+      <button id="logout-btn" class="btn-ghost">退出</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="stats">运营统计</button>
+    <button class="tab" data-tab="users">用户管理</button>
+    <button class="tab" data-tab="orders">订单管理</button>
+    <button class="tab" data-tab="audit">审计日志</button>
+  </nav>
+
+  <main>
+    <!-- 统计 -->
+    <section id="tab-stats" class="tab-panel active">
+      <div id="stats-grid" class="stats-grid"></div>
+      <p class="muted" id="stats-time"></p>
+    </section>
+
+    <!-- 用户 -->
+    <section id="tab-users" class="tab-panel">
+      <div class="toolbar">
+        <input id="user-q" type="search" placeholder="搜索用户名 / 邮箱">
+        <select id="user-status">
+          <option value="">全部状态</option>
+          <option value="active">正常</option>
+          <option value="disabled">已停用</option>
+        </select>
+        <button id="user-search" class="btn">查询</button>
+      </div>
+      <table class="grid" id="users-table">
+        <thead>
+          <tr><th>ID</th><th>用户名</th><th>邮箱</th><th>验证</th><th>状态</th><th>授权</th><th>操作</th></tr>
+        </thead>
+        <tbody id="users-tbody"></tbody>
+      </table>
+      <div class="pager">
+        <button id="users-prev" class="btn-ghost">上一页</button>
+        <span id="users-page" class="muted"></span>
+        <button id="users-next" class="btn-ghost">下一页</button>
+      </div>
+    </section>
+
+    <!-- 订单 -->
+    <section id="tab-orders" class="tab-panel">
+      <div class="toolbar">
+        <select id="order-status">
+          <option value="">全部状态</option>
+          <option value="pending">待确认</option>
+          <option value="confirmed">已确认</option>
+          <option value="canceled">已取消</option>
+          <option value="refunded">已退款</option>
+        </select>
+        <button id="order-search" class="btn">查询</button>
+      </div>
+      <table class="grid" id="orders-table">
+        <thead>
+          <tr><th>ID</th><th>订单号</th><th>用户</th><th>金额</th><th>状态</th><th>创建时间</th><th>操作</th></tr>
+        </thead>
+        <tbody id="orders-tbody"></tbody>
+      </table>
+      <div class="pager">
+        <button id="orders-prev" class="btn-ghost">上一页</button>
+        <span id="orders-page" class="muted"></span>
+        <button id="orders-next" class="btn-ghost">下一页</button>
+      </div>
+    </section>
+
+    <!-- 审计 -->
+    <section id="tab-audit" class="tab-panel">
+      <table class="grid" id="audit-table">
+        <thead>
+          <tr><th>ID</th><th>操作</th><th>操作人</th><th>目标用户</th><th>原因</th><th>明细</th><th>时间</th></tr>
+        </thead>
+        <tbody id="audit-tbody"></tbody>
+      </table>
+      <div class="pager">
+        <button id="audit-prev" class="btn-ghost">上一页</button>
+        <span id="audit-page" class="muted"></span>
+        <button id="audit-next" class="btn-ghost">下一页</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ========== 用户详情弹窗 ========== -->
+<dialog id="user-dialog" class="dialog">
+  <h2 id="ud-title">用户详情</h2>
+  <div id="ud-body"></div>
+  <div class="dialog-actions">
+    <button id="ud-suspend" class="btn-danger">停用账号</button>
+    <button id="ud-resume" class="btn">恢复账号</button>
+    <button id="ud-extend" class="btn">延长试用</button>
+    <button id="ud-close" class="btn-ghost">关闭</button>
+  </div>
+</dialog>
+
+<!-- ========== 确认付款弹窗 ========== -->
+<dialog id="pay-dialog" class="dialog">
+  <h2>确认付款</h2>
+  <p id="pay-order-info" class="muted"></p>
+  <label>批准</label>
+  <select id="pay-approve">
+    <option value="true">批准并开通订阅</option>
+    <option value="false">驳回</option>
+  </select>
+  <label>原因（必填，进入审计日志）</label>
+  <input id="pay-reason" type="text" placeholder="如：已核对支付宝到账">
+  <div id="pay-error" class="error-text"></div>
+  <div class="dialog-actions">
+    <button id="pay-submit" class="btn">提交</button>
+    <button id="pay-close" class="btn-ghost">取消</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

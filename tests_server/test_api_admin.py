@@ -214,3 +214,46 @@ class TestSubscriptionAdjust(ServerTestCase):
             headers=self.auth(self.admin_token),
             json={"action": "teleport", "reason": "测试"})
         self.assertEqual(r.status_code, 400)
+
+    # ---------- 管理后台前端对接 ----------
+    def test_admin_orders_list_includes_id_and_username(self):
+        """管理后台「确认付款」按钮依赖订单 id 与用户名展示。"""
+        r = self.client.post("/api/orders", headers=self.auth(self.token),
+                             json={"plan_code": "monthly"})
+        self.assertEqual(r.status_code, 201, r.text)
+        r = self.client.get("/api/admin/orders",
+                            headers=self.auth(self.admin_token))
+        self.assertEqual(r.status_code, 200)
+        orders = r.json()["orders"]
+        self.assertGreaterEqual(len(orders), 1)
+        order = orders[0]
+        self.assertIn("id", order)
+        self.assertIsInstance(order["id"], int)
+        self.assertEqual(order["username"], self.user["username"])
+        self.assertIn("payment_reference", order)
+
+    def test_admin_console_static_mounted(self):
+        """/admin 提供管理后台 SPA（开发模式挂载）。"""
+        r = self.client.get("/admin/")
+        if r.status_code == 404:
+            self.skipTest("admin 静态目录未随包分发")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("CodeLabelStudio", r.text)
+        for asset in ("/admin/app.js", "/admin/style.css"):
+            r = self.client.get(asset)
+            self.assertEqual(r.status_code, 200, asset)
+
+    def test_confirm_payment_writes_audit_log(self):
+        """确认付款后审计日志留痕（管理后台审计页数据源）。"""
+        r = self.client.post("/api/orders", headers=self.auth(self.token),
+                             json={"plan_code": "monthly"})
+        order = r.json()
+        r = self.client.post(
+            f"/api/admin/orders/{order['id']}/confirm-payment",
+            headers=self.auth(self.admin_token),
+            json={"approved": True, "reason": "已核对到账"})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.get("/api/admin/audit-logs",
+                            headers=self.auth(self.admin_token))
+        actions = [l["action"] for l in r.json()["logs"]]
+        self.assertIn("confirm_payment", actions)

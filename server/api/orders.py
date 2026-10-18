@@ -81,6 +81,7 @@ def api_payment_proof(order_id: int, payload: PaymentProofIn,
 
 def _order_dict(order) -> dict:
     return {
+        "id": order.id,
         "order_no": order.order_no,
         "plan_code": order.plan.plan_code if order.plan else None,
         "plan_name": order.plan.plan_name if order.plan else None,

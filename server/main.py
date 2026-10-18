@@ -15,6 +15,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -131,6 +132,16 @@ def create_app() -> FastAPI:
     app.include_router(license.router)
     app.include_router(orders.router)
     app.include_router(admin.router)
+
+    # ---------- 管理后台前端（可选挂载） ----------
+    # 生产建议由 Nginx 直接伺服 admin/ 静态目录；此处挂载仅为开发便利。
+    # 注意：/admin 页面本身不含权限校验，鉴权在 /api/admin/* 强制完成。
+    admin_dir = Path(__file__).resolve().parents[1] / "admin"
+    if admin_dir.is_dir() and (admin_dir / "index.html").exists():
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/admin", StaticFiles(directory=str(admin_dir),
+                                        html=True), name="admin")
+        logger.info("admin console mounted at /admin")
     return app
 
 

@@ -164,11 +164,18 @@ def api_admin_orders(status: str = Query(default=""),
     orders = list(db.scalars(
         stmt.order_by(Order.id.desc()).offset((page - 1) * size).limit(size)
     ))
+    user_ids = {o.user_id for o in orders}
+    usernames = {
+        u.id: u.username for u in db.scalars(
+            select(User).where(User.id.in_(user_ids)))
+    } if user_ids else {}
     return {
         "total": total,
         "orders": [
-            {"order_no": o.order_no,
+            {"id": o.id,
+             "order_no": o.order_no,
              "user_id": o.user_id,
+             "username": usernames.get(o.user_id),
              "amount": str(o.amount), "currency": o.currency,
              "order_status": o.order_status,
              "payment_reference": o.payment_reference,
