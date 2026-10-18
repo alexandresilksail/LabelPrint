@@ -16,12 +16,13 @@
 | 2 | 数据完整性：schema v2 迁移、CHECK 约束、GS1 来源统一校验、批量上限/取消/进度、备份恢复加固 | ✅ 已完成（`docs/test_results_phase1.txt`） |
 | 3 | 打印与导出：PDF / SVG / PNG / CSV、4+ 套标签模板、打印预览与越界警告 | ✅ 已完成（`docs/test_results_phase2.txt`） |
 | 4 | 在线服务端：注册/邮箱验证/登录、7 天试用、订阅、订单、人工付款确认、管理后台 API、Alembic 迁移 | ✅ 已完成（`docs/test_results_phase4.txt`） |
-| 5 | PySide6 桌面客户端：7 大页面、授权缓存与离线宽限、服务端 API 客户端 | ✅ 代码完成，UI 冒烟测试已编写（PySide6 安装后运行） |
+| 5 | PySide6 桌面客户端：7 大页面、授权缓存与离线宽限、服务端 API 客户端 | ✅ 已完成（UI 冒烟 8 项通过，`docs/test_results_phase3.txt`） |
 | 6 | 管理员 Web 后台（前端页面） | ✅ 已完成（`admin/` 零构建 SPA，统计/用户/订单/审计 4 页签） |
 | 7 | 安全审计：bandit 静态扫描 + 人工清单 | ✅ 已完成（`docs/SECURITY_AUDIT.md`，0 问题） |
-| 8 | Windows 发布：安装版 / 绿色便携版 / 卸载程序 | 🔄 脚本就绪（PySide6 安装后执行构建） |
+| 8 | Windows 发布：安装版 / 绿色便携版 / 卸载程序 | ✅ 已构建并冒烟验证（`docs/BUILD_REPORT.md`） |
 | 9 | 部署文档：DEPLOYMENT / OPERATIONS / BACKUP_RESTORE / UPGRADE_ROLLBACK | ✅ 已完成 |
-| 10 | 最终验收 | ⏳ 待开始 |
+| 10 | 端到端测试：跨客户端/服务端全链路 | ✅ 已完成（7 项，`tests_server/test_e2e_full_flow.py`） |
+| 11 | 最终验收 | 🔄 进行中 |
 
 ## 快速开始
 

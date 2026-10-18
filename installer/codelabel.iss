@@ -101,8 +101,10 @@ begin
   begin
     DataDir := DataDirPage.Values[0];
     ForceDirectories(DataDir);
-    { 生成便携启动配置：将数据目录写入 exe 同级 config.ini 供客户端读取 }
+    { 客户端启动时读取 exe 同级 data_dir.txt 定位数据目录 }
     SaveStringToFile(ExpandConstant('{app}\data_dir.txt'), DataDir, False);
+    { 同时写入注册表，供卸载程序准确定位（用户可能自选任意目录） }
+    RegWriteStringValue(HKCU, 'Software\CodeLabelStudio', 'DataDir', DataDir);
   end;
 end;
 
@@ -123,9 +125,14 @@ begin
   begin
     if not KeepData then
     begin
-      DataDir := ExpandConstant('{localappdata}\{#MyAppName}');
-      if DirExists(DataDir) then
+      { 优先用注册表记录的实际数据目录；缺失时回退默认路径 }
+      if not RegQueryStringValue(HKCU, 'Software\CodeLabelStudio',
+                                 'DataDir', DataDir) then
+        DataDir := ExpandConstant('{localappdata}\{#MyAppName}');
+      if (DataDir <> '') and DirExists(DataDir) then
         DelTree(DataDir, True, True, True);
     end;
+    RegDeleteValue(HKCU, 'Software\CodeLabelStudio', 'DataDir');
+    RegDeleteKeyIfEmpty(HKCU, 'Software\CodeLabelStudio');
   end;
 end;
