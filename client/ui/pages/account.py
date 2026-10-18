@@ -5,7 +5,9 @@ from PySide6.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget,
 )
 
-from ..widgets import Card, MutedLabel, PrimaryButton, RunLater, error, info, warn
+from ..widgets import (
+    Card, MutedLabel, PrimaryButton, RunLater, error, info, notify_main, warn,
+)
 from ..api_client import ApiClient, ApiError, device_fingerprint
 
 
@@ -276,7 +278,7 @@ class AccountPage(QWidget):
         def _done(_result):
             info(self, "授权已激活", "本设备已获得授权凭证（可离线宽限使用）")
             self.refresh_all()
-            self.main.notify_license_changed()
+            notify_main(self, "notify_license_changed")
 
         RunLater(self).run(_do, on_done=_done,
                            on_error=lambda m: error(self, "激活失败", m))
@@ -338,10 +340,18 @@ class AccountPage(QWidget):
                 if "error" in data:
                     self.subscription_label.setText(f"订阅状态获取失败：{data['error']}")
                 else:
-                    self.subscription_label.setText(
-                        f"订阅：{data.get('status', '未知')}"
-                        f"（计划 {data.get('plan_code') or '-'}，"
-                        f"到期 {data.get('expires_at') or '-'}）")
+                    sub = data.get("subscription") or {}
+                    trial = data.get("trial") or {}
+                    parts = [f"状态：{data.get('status', '未知')}"]
+                    if sub.get("plan_code"):
+                        parts.append(f"计划：{sub.get('plan_name') or sub['plan_code']}")
+                    if sub.get("expires_at"):
+                        parts.append(f"到期：{sub['expires_at']}")
+                    elif trial.get("expires_at"):
+                        parts.append(
+                            f"试用剩余 {trial.get('days_remaining', '?')} 天"
+                            f"（{trial['expires_at']} 到期）")
+                    self.subscription_label.setText("；".join(parts))
 
             RunLater(self).run(_load_sub, on_done=_done_sub)
         else:

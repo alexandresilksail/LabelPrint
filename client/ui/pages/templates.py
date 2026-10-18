@@ -244,8 +244,9 @@ class TemplatesPage(QWidget):
             self._editing_id = None
             self.btn_save.setEnabled(False)
             self.reload()
-            if hasattr(self.main, "print_page"):
-                self.main.print_page.reload_templates()
+            print_page = getattr(self.main, "print_page", None)
+            if print_page is not None:
+                print_page.reload_templates()
 
         RunLater(self).run(_do, on_done=_done,
                            on_error=lambda m: error(self, "保存失败", m))

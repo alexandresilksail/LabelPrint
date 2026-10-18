@@ -135,6 +135,14 @@ class MutedLabel(QLabel):
         self.setStyleSheet(f"color: {TEXT_MUTED};")
 
 
+def notify_main(page, method_name):
+    """跨页面刷新助手：main_window 缺失（测试环境）时安全跳过。"""
+    main = getattr(page, "main", None)
+    fn = getattr(main, method_name, None) if main is not None else None
+    if fn:
+        fn()
+
+
 class PrimaryButton(QPushButton):
     """主操作按钮。"""
 

@@ -9,7 +9,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..widgets import (
-    Card, MutedLabel, PrimaryButton, RunLater, confirm, error, info, warn,
+    Card, MutedLabel, PrimaryButton, RunLater, confirm, error, info,
+    notify_main, warn,
 )
 
 BARCODE_TYPES = ["EAN-13", "EAN-8", "UPC-A", "UPC-E", "Code128", "Code39"]
@@ -119,7 +120,7 @@ class GeneratePage(QWidget):
         def _done(record):
             self.single_result.setText(
                 f"✅ 已生成 {record['barcode_value']}（{record['barcode_type']}）")
-            self.main.notify_records_changed()
+            notify_main(self, "notify_records_changed")
 
         RunLater(self).run(_do, on_done=_done,
                            on_error=lambda m: error(self, "生成失败", m))
@@ -207,7 +208,7 @@ class GeneratePage(QWidget):
             else:
                 self.batch_result.setText(f"✅ 已生成 {created} 个编码")
             self.reload_ranges()
-            self.main.notify_records_changed()
+            notify_main(self, "notify_records_changed")
 
         RunLater(self).run(_do, on_done=_done,
                            on_error=lambda m: (
@@ -398,7 +399,7 @@ class GeneratePage(QWidget):
                 f"无效 {len(report['invalid'])} 条；"
                 f"清单内重复 {len(report['duplicates_in_file'])} 条；"
                 f"库内已存在 {len(report['already_exists'])} 条")
-            self.main.notify_records_changed()
+            notify_main(self, "notify_records_changed")
 
         RunLater(self).run(_do, on_done=_done,
                            on_error=lambda m: error(self, "导入失败", m))

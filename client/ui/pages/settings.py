@@ -5,7 +5,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from ..widgets import Card, MutedLabel, PrimaryButton, RunLater, confirm, error, info
+from ..widgets import (
+    Card, MutedLabel, PrimaryButton, RunLater, confirm, error, info,
+    notify_main,
+)
 from ...barcode.service import BarcodeService
 
 
@@ -93,7 +96,7 @@ class SettingsPage(QWidget):
         def _done(_result):
             info(self, "恢复完成", "数据库已恢复，页面数据已刷新")
             self.data_status.setText(f"已从 {path} 恢复")
-            self.main.notify_records_changed()
+            notify_main(self, "notify_records_changed")
 
         RunLater(self).run(_do, on_done=_done,
                            on_error=lambda m: error(self, "恢复失败", m))

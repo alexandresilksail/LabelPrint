@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (
 from ...barcode.checkdigit import BARCODE_LENGTHS
 from ...barcode.csvio import export_records_csv
 from ..widgets import (
-    Card, MutedLabel, PrimaryButton, RunLater, confirm, error, info, warn,
+    Card, MutedLabel, PrimaryButton, RunLater, confirm, error, info,
+    notify_main, warn,
 )
 
 COLUMNS = ["编码", "类型", "状态", "商品名称", "来源", "创建时间"]
@@ -167,9 +168,10 @@ class RecordsPage(QWidget):
             _do,
             on_done=lambda _r: (info(self, "完成", f"编码 {value} 状态已更新"),
                                 self.reload(),
-                                self.main.notify_data_changed()),
+                                notify_main(self, "notify_records_changed")),
             on_error=lambda m: warn(self, "操作被拒绝", m),
         )
+
 
     def _invalidate(self):
         if not self.selected_value:
@@ -186,7 +188,7 @@ class RecordsPage(QWidget):
             _do,
             on_done=lambda _r: (info(self, "完成", f"编码 {value} 已作废"),
                                 self.reload(),
-                                self.main.notify_data_changed()),
+                                notify_main(self, "notify_records_changed")),
             on_error=lambda m: warn(self, "操作被拒绝", m),
         )
 
