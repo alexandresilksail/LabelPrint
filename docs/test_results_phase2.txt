@@ -1,0 +1,56 @@
+CodeLabel Studio — 阶段 2 条码核心自动化测试记录
+运行时间: 2026-10-18 11:51:48    
+运行环境: Windows / Python 3.13.14 (managed) / python-barcode 0.16.1 (仅交叉验证，产品不依赖)
+命令: python -m unittest discover -s tests -t . -v
+================================================================
+test_all_lengths_defined (tests.test_checkdigit.TestCheckDigit.test_all_lengths_defined) ... ok
+test_calculate_check_digit (tests.test_checkdigit.TestCheckDigit.test_calculate_check_digit) ... ok
+test_calculate_partial_length_enforced (tests.test_checkdigit.TestCheckDigit.test_calculate_partial_length_enforced) ... ok
+test_known_valid_codes (tests.test_checkdigit.TestCheckDigit.test_known_valid_codes) ... ok
+test_non_digit_rejected (tests.test_checkdigit.TestCheckDigit.test_non_digit_rejected) ... ok
+test_normalize_autofill_check_digit (tests.test_checkdigit.TestCheckDigit.test_normalize_autofill_check_digit) ... ok
+test_unsupported_type_rejected (tests.test_checkdigit.TestCheckDigit.test_unsupported_type_rejected) ... ok
+test_wrong_check_digit_rejected (tests.test_checkdigit.TestCheckDigit.test_wrong_check_digit_rejected) ... ok
+test_wrong_length_rejected (tests.test_checkdigit.TestCheckDigit.test_wrong_length_rejected) ... ok
+test_backup_and_restore (tests.test_database.TestBackupRestore.test_backup_and_restore) ... ok
+test_concurrent_allocation_no_duplicates (tests.test_database.TestConcurrency.test_concurrent_allocation_no_duplicates) ... ok
+test_generate_logged (tests.test_database.TestOperationLogs.test_generate_logged) ... ok
+test_exhaustion_safe_stop (tests.test_database.TestRangeAllocation.test_exhaustion_safe_stop) ... ok
+test_range_value_format (tests.test_database.TestRangeAllocation.test_range_value_format) ... ok
+test_reopen_preserves_data_and_does_not_duplicate_presets (tests.test_database.TestSchema.test_reopen_preserves_data_and_does_not_duplicate_presets) ... ok
+test_schema_and_presets (tests.test_database.TestSchema.test_schema_and_presets) ... ok
+test_rollback_leaves_no_partial_write (tests.test_database.TestTransactionRollback.test_rollback_leaves_no_partial_write) ... ok
+test_duplicate_value_rejected (tests.test_database.TestUniqueConstraint.test_duplicate_value_rejected) ... ok
+test_cross_check_with_python_barcode (tests.test_encoder.TestCodeTables.test_cross_check_with_python_barcode) ... ok
+test_parity_table_complete (tests.test_encoder.TestCodeTables.test_parity_table_complete) ... ok
+test_table_internal_relationships (tests.test_encoder.TestCodeTables.test_table_internal_relationships)
+EAN 码表内在关系：R = L 按位取反；G = R 反转。 ... ok
+test_guard_structure (tests.test_encoder.TestEncode.test_guard_structure) ... ok
+test_invalid_value_rejected (tests.test_encoder.TestEncode.test_invalid_value_rejected) ... ok
+test_module_counts (tests.test_encoder.TestEncode.test_module_counts) ... ok
+test_quiet_zone (tests.test_encoder.TestEncode.test_quiet_zone) ... ok
+test_upc_a_equals_ean13_with_leading_zero (tests.test_encoder.TestEncode.test_upc_a_equals_ean13_with_leading_zero) ... ok
+test_png_roundtrip (tests.test_encoder.TestRenderDecodeRoundtrip.test_png_roundtrip) ... ok
+test_render_rejects_bad_params (tests.test_encoder.TestRenderDecodeRoundtrip.test_render_rejects_bad_params) ... ok
+test_render_with_text_still_decodable (tests.test_encoder.TestRenderDecodeRoundtrip.test_render_with_text_still_decodable)
+带可读数字渲染时，按条码区波段解码仍应成功。 ... ok
+test_batch_count_must_be_positive (tests.test_service.TestGenerateBatch.test_batch_count_must_be_positive) ... ok
+test_batch_from_range (tests.test_service.TestGenerateBatch.test_batch_from_range) ... ok
+test_duplicate_rejected (tests.test_service.TestGenerateSingle.test_duplicate_rejected) ... ok
+test_exactly_one_source_required (tests.test_service.TestGenerateSingle.test_exactly_one_source_required) ... ok
+test_explicit_partial_autofill (tests.test_service.TestGenerateSingle.test_explicit_partial_autofill) ... ok
+test_gs1_range_requires_authorization (tests.test_service.TestGenerateSingle.test_gs1_range_requires_authorization) ... ok
+test_invalid_rejected_and_not_saved (tests.test_service.TestGenerateSingle.test_invalid_rejected_and_not_saved) ... ok
+test_range_type_mismatch_rejected (tests.test_service.TestGenerateSingle.test_range_type_mismatch_rejected) ... ok
+test_import_records_persists_valid_only (tests.test_service.TestImport.test_import_records_persists_valid_only) ... ok
+test_validate_import_categories (tests.test_service.TestImport.test_validate_import_categories) ... ok
+test_query_filters (tests.test_service.TestQuery.test_query_filters) ... ok
+test_stats (tests.test_service.TestQuery.test_stats) ... ok
+test_full_lifecycle (tests.test_service.TestStatusFlow.test_full_lifecycle) ... ok
+test_invalidate_keeps_history_and_blocks_reallocation (tests.test_service.TestStatusFlow.test_invalidate_keeps_history_and_blocks_reallocation) ... ok
+test_update_details_only_when_generated (tests.test_service.TestStatusFlow.test_update_details_only_when_generated) ... ok
+
+----------------------------------------------------------------------
+Ran 44 tests in 2.477s
+
+OK

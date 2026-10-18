@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib60/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+env/
+
+# 本地运行数据（不入库）
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+exports/
+logs/
+templates_custom/
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# 环境配置（含密钥，绝不入库）
+.env
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 测试与构建产物
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# 安装包构建产物（大文件，另行发布）
+installer/Output/
