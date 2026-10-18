@@ -21,6 +21,9 @@ class UiSmokeTestCase(unittest.TestCase):
         import os
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication
+        from client.ui import widgets
+        # 离屏环境：对话框改为记录而非弹窗（避免模态框阻塞测试）
+        widgets.SILENT_DIALOGS = True
         cls.app = QApplication.instance() or QApplication([])
         cls._tmp = tempfile.mkdtemp(prefix="cls_ui_test_")
 
@@ -30,10 +33,14 @@ class UiSmokeTestCase(unittest.TestCase):
             prefix="cls_ui_ctx_", dir=self._tmp))
 
     def _seed_records(self, ctx, count=5):
-        from client.barcode.service import BarcodeService
+        """创建编号范围并生成 count 条记录。
+
+        范围预留余量（count + 10），避免批量生成恰好耗尽范围
+        （耗尽后范围状态为 exhausted，不再出现在"活跃范围"下拉框）。
+        """
         rid = ctx.service.create_range(
             "UI 测试范围", "EAN-13", prefix="6901234",
-            start_number=0, end_number=count - 1)
+            start_number=0, end_number=count + 10)
         result = ctx.service.generate_batch(
             "EAN-13", count=count, range_id=rid)
         return result["created"]
@@ -73,7 +80,7 @@ class UiSmokeTestCase(unittest.TestCase):
         page.f_name.setText("UI 测试模板")
         page.save_template()
         self.assertTrue(self._wait_until(lambda: any(
-            t["template_name"] == "UI 测试模板"
+            t.template_name == "UI 测试模板"
             for t in ctx.templates.list_templates())))
 
     def test_print_page_layout(self):
@@ -99,7 +106,8 @@ class UiSmokeTestCase(unittest.TestCase):
         self._seed_records(ctx, count=2)
         page = RecordsPage(ctx, main_window=None)
         page.reload()
-        self.assertTrue(self._wait_until(lambda: len(page.records) == 2))
+        self.assertTrue(self._wait_until(
+            lambda: page.table.rowCount() == 2))
 
     def test_settings_integrity(self):
         from client.ui.pages.settings import SettingsPage

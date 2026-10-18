@@ -406,10 +406,16 @@ class GeneratePage(QWidget):
 
     # ================== 公共 ==================
     def reload_ranges(self):
+        # 序号守卫：并发刷新时只接受最新一次响应，避免旧数据清空新数据
+        self._range_seq = getattr(self, "_range_seq", 0) + 1
+        seq = self._range_seq
+
         def _load():
             return self.ctx.service.list_ranges()
 
         def _done(ranges):
+            if seq != getattr(self, "_range_seq", 0):
+                return  # 过期响应
             active = [r for r in ranges if r["range_status"] == "active"]
             for combo in (self.single_range, self.batch_range):
                 current = combo.currentData()

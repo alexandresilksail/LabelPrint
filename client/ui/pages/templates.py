@@ -2,8 +2,8 @@
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
-    QHeaderView, QInputDialog, QLineEdit, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QHeaderView, QInputDialog, QLineEdit, QPushButton, QSpinBox,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..widgets import (
@@ -122,21 +122,26 @@ class TemplatesPage(QWidget):
         return spin
 
     def reload(self):
+        self._list_seq = getattr(self, "_list_seq", 0) + 1
+        seq = self._list_seq
+
         def _load():
             return self.ctx.templates.list_templates()
 
         def _done(templates):
+            if seq != getattr(self, "_list_seq", 0):
+                return  # 过期响应
             self.table.setRowCount(len(templates))
             for i, t in enumerate(templates):
-                self.table.setItem(i, 0, QTableWidgetItem(str(t["id"])))
-                self.table.setItem(i, 1, QTableWidgetItem(t["template_name"]))
+                self.table.setItem(i, 0, QTableWidgetItem(str(t.id)))
+                self.table.setItem(i, 1, QTableWidgetItem(t.template_name))
                 self.table.setItem(
                     i, 2, QTableWidgetItem(
-                        f"{t['label_width']:g} x {t['label_height']:g}"))
+                        f"{t.label_width:g} x {t.label_height:g}"))
                 self.table.setItem(
-                    i, 3, QTableWidgetItem(f"{t['rows']} x {t['columns']}"))
+                    i, 3, QTableWidgetItem(f"{t.rows} x {t.columns}"))
                 self.table.setItem(
-                    i, 4, QTableWidgetItem("是" if t["builtin"] else ""))
+                    i, 4, QTableWidgetItem("是" if t.builtin else ""))
 
         RunLater(self).run(_load, on_done=_done,
                            on_error=lambda m: error(self, "加载失败", m))
@@ -150,11 +155,10 @@ class TemplatesPage(QWidget):
         def _load():
             return self.ctx.templates.get_template(template_id)
 
-        def _done(data):
-            if not data:
+        def _done(t):
+            if not t:
                 return
             self._editing_id = template_id
-            t = LabelTemplate.from_dict(data)
             self.f_name.setText(t.template_name)
             self.f_paper_w.setValue(t.paper_width)
             self.f_paper_h.setValue(t.paper_height)

@@ -44,10 +44,13 @@ class LabelTemplate:
     offset_x: float = 0.0
     offset_y: float = 0.0
     builtin: bool = False
+    # 数据库主键（来自 print_templates.id）；未持久化时为 None
+    id: int | None = None
 
     # ---------- 序列化 ----------
     def to_dict(self):
         d = asdict(self)
+        d.pop("id", None)  # id 由数据库自增生成，不参与 INSERT/UPDATE
         d["margins"] = json.dumps(self.margins, ensure_ascii=False)
         d["show_text"] = 1 if self.show_text else 0
         d["builtin"] = 1 if self.builtin else 0

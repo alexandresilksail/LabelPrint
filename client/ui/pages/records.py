@@ -7,8 +7,8 @@ invalidated），非法流转在 UI 层即被拦截，与服务端规则一致�
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView,
-    QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ...barcode.checkdigit import BARCODE_LENGTHS
@@ -109,11 +109,16 @@ class RecordsPage(QWidget):
             "barcode_type": self.combo_type.currentData() or None,
             "status": self.combo_status.currentData() or None,
         }
+        # 序号守卫：并发查询时只渲染最新一次结果
+        self._query_seq = getattr(self, "_query_seq", 0) + 1
+        seq = self._query_seq
 
         def _load():
             return self.ctx.service.query_records(**filters)
 
         def _done(records):
+            if seq != getattr(self, "_query_seq", 0):
+                return  # 过期响应
             self._render(records)
 
         RunLater(self).run(_load, on_done=_done,

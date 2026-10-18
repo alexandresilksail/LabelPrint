@@ -9,6 +9,11 @@ from PySide6.QtWidgets import (
 from ..barcode.encoder import encode_with_quiet_zone
 from .theme import PRIMARY, TEXT, TEXT_MUTED
 
+# 测试静音开关：置 True 时所有对话框不弹窗，仅记录到 DIALOG_LOG
+# （离屏 / 自动化测试环境避免模态框阻塞）。
+SILENT_DIALOGS = False
+DIALOG_LOG = []
+
 
 class Card(QFrame):
     """圆角白底卡片容器。"""
@@ -107,18 +112,30 @@ class BarcodeWidget(QWidget):
 
 
 def info(parent, title, text):
+    if SILENT_DIALOGS:
+        DIALOG_LOG.append(("info", title, text))
+        return
     QMessageBox.information(parent, title, text)
 
 
 def warn(parent, title, text):
+    if SILENT_DIALOGS:
+        DIALOG_LOG.append(("warn", title, text))
+        return
     QMessageBox.warning(parent, title, text)
 
 
 def error(parent, title, text):
+    if SILENT_DIALOGS:
+        DIALOG_LOG.append(("error", title, text))
+        return
     QMessageBox.critical(parent, title, text)
 
 
 def confirm(parent, title, text) -> bool:
+    if SILENT_DIALOGS:
+        DIALOG_LOG.append(("confirm", title, text))
+        return True
     box = QMessageBox(parent)
     box.setWindowTitle(title)
     box.setText(text)
@@ -163,6 +180,9 @@ class RunLater:
         RunLater(self).run(fn, on_done=..., on_error=...)
     fn 在子线程执行（禁止触碰 UI）；on_done(result)/on_error(msg)
     在主线程执行（可安全更新 UI）。
+
+    生命周期：线程不挂到页面对象下（避免页面销毁时 Qt 强制删除
+    仍在运行的线程导致崩溃）；完成后 quit + wait 确保退出再移除引用。
     """
 
     def __init__(self, parent):
@@ -171,7 +191,7 @@ class RunLater:
 
     def run(self, fn, on_done=None, on_error=None, on_progress=None):
         parent = self._parent
-        thread = QThread(parent)
+        thread = QThread()  # 无父对象：由本类显式管理生命周期
         signals = _WorkerSignals()
         self._threads.append(thread)
 
@@ -185,6 +205,7 @@ class RunLater:
 
         def _finish():
             thread.quit()
+            thread.wait(2000)
             try:
                 self._threads.remove(thread)
             except ValueError:
@@ -200,3 +221,11 @@ class RunLater:
         thread.finished.connect(thread.deleteLater)
         thread.start()
         return thread
+
+    def shutdown(self, timeout_ms=2000):
+        """等待全部后台线程结束（页面关闭/测试拆卸时调用）。"""
+        for thread in list(self._threads):
+            if thread.isRunning():
+                thread.quit()
+                thread.wait(timeout_ms)
+        self._threads.clear()

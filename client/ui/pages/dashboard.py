@@ -73,10 +73,15 @@ class DashboardPage(QWidget):
         self.refresh_stats()
 
     def refresh_stats(self):
+        self._stats_seq = getattr(self, "_stats_seq", 0) + 1
+        seq = self._stats_seq
+
         def _load():
             return self.ctx.service.get_stats()
 
         def _done(stats):
+            if seq != getattr(self, "_stats_seq", 0):
+                return  # 过期响应
             by_status = stats["by_status"]
             self.stat_total.set_value(stats["total"])
             self.stat_generated.set_value(by_status.get("generated", 0))
@@ -89,7 +94,7 @@ class DashboardPage(QWidget):
                            on_error=lambda m: error(self, "加载失败", m))
 
     def refresh_license(self):
-        from ..licensing.client_license import offline_status
+        from ...licensing.client_license import offline_status
         cached = self.ctx.license_store.load()
         status = offline_status(cached)
         reason_text = {

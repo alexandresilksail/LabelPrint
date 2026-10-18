@@ -62,14 +62,14 @@ class SheetPreviewWidget(QWidget):
                 break
             value, barcode_type = self.items[filled]
             filled += 1
-            sx = x0 + slot["x"] * scale
-            sy = y0 + slot["y"] * scale
-            sw = slot["width"] * scale
-            sh = slot["height"] * scale
+            sx = x0 + slot["x_mm"] * scale
+            sy = y0 + slot["y_mm"] * scale
+            sw = t.label_width * scale
+            sh = t.label_height * scale
             painter.setPen(QPen(QColor("#E5E7EB"), 1))
             painter.drawRect(QRectF(sx, sy, sw, sh))
             fit = fit_barcode(t.label_width, t.label_height, barcode_type,
-                              bar_height_mm=t.barcode_height)
+                              show_text=t.show_text)
             module_px = fit["module_mm"] * scale
             if module_px <= 0:
                 continue
@@ -78,7 +78,7 @@ class SheetPreviewWidget(QWidget):
             except Exception:  # nosec B112 - 预览中跳过单个非法编码，其余继续绘制
                 continue
             bw = len(modules) * module_px
-            bh = t.barcode_height * scale
+            bh = fit["barcode_h_mm"] * scale
             bx = sx + (sw - bw) / 2
             by = sy + 4
             painter.setPen(Qt.NoPen)
@@ -164,11 +164,15 @@ class PrintPage(QWidget):
     # ================== 数据 ==================
     def reload_records(self):
         status = self.filter_status.currentData()
+        self._records_seq = getattr(self, "_records_seq", 0) + 1
+        seq = self._records_seq
 
         def _load():
             return self.ctx.service.query_records(status=status or None)
 
         def _done(records):
+            if seq != getattr(self, "_records_seq", 0):
+                return  # 过期响应
             self.records = records
             self.table.setRowCount(len(records))
             for i, r in enumerate(records):
@@ -187,16 +191,21 @@ class PrintPage(QWidget):
                            on_error=lambda m: error(self, "加载失败", m))
 
     def reload_templates(self):
+        self._templates_seq = getattr(self, "_templates_seq", 0) + 1
+        seq = self._templates_seq
+
         def _load():
             return self.ctx.templates.list_templates()
 
         def _done(templates):
+            if seq != getattr(self, "_templates_seq", 0):
+                return  # 过期响应
             self.templates = templates
             current = self.template_combo.currentData()
             self.template_combo.clear()
             for t in templates:
                 self.template_combo.addItem(
-                    f"#{t['id']} {t['template_name']}", t["id"])
+                    f"#{t.id} {t.template_name}", t.id)
             if current is not None:
                 idx = self.template_combo.findData(current)
                 if idx >= 0:
@@ -211,8 +220,8 @@ class PrintPage(QWidget):
         template_id = self.template_combo.currentData()
         if template_id is None:
             return None
-        data = next((t for t in self.templates if t["id"] == template_id), None)
-        return LabelTemplate.from_dict(data) if data else None
+        return next(
+            (t for t in self.templates if t.id == template_id), None)
 
     def selected_items(self):
         rows = {idx.row() for idx in self.table.selectedIndexes()}

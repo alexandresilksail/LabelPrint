@@ -5,10 +5,10 @@ from PySide6.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget,
 )
 
+from ...auth.api_client import ApiClient, ApiError, device_fingerprint
 from ..widgets import (
     Card, MutedLabel, PrimaryButton, RunLater, error, info, notify_main, warn,
 )
-from ..api_client import ApiClient, ApiError, device_fingerprint
 
 
 class AccountPage(QWidget):
@@ -264,7 +264,7 @@ class AccountPage(QWidget):
         def _do():
             pk = client.license_public_key()
             result = client.issue_license(token, fingerprint)
-            from ..licensing.client_license import CachedCredential
+            from ...licensing.client_license import CachedCredential
             validated_at = result.get("server_time") or ""
             cached = CachedCredential(
                 credential=result.get("credential", {}),
@@ -353,7 +353,9 @@ class AccountPage(QWidget):
                             f"（{trial['expires_at']} 到期）")
                     self.subscription_label.setText("；".join(parts))
 
-            RunLater(self).run(_load_sub, on_done=_done_sub)
+            # 后台加载失败不弹模态框（避免阻塞与离屏环境挂起），仅更新状态文字
+            RunLater(self).run(_load_sub, on_done=_done_sub,
+                               on_error=self._sub_load_failed)
         else:
             self.subscription_label.setText("登录后可查看订阅状态")
 
@@ -374,7 +376,8 @@ class AccountPage(QWidget):
                         f"• {p['plan_name']}：¥{p['price']}/{p['billing_period']}")
                 self.plans_label.setText("\n".join(lines) or "暂无计划")
 
-        RunLater(self).run(_load_plans, on_done=_done_plans)
+        RunLater(self).run(_load_plans, on_done=_done_plans,
+                           on_error=self._plans_load_failed)
 
         # 设备列表
         if token:
@@ -395,14 +398,24 @@ class AccountPage(QWidget):
                                      f"（{d.get('status', '')}）")
                     self.devices_label.setText("\n".join(lines))
 
-            RunLater(self).run(_load_devices, on_done=_done_devices)
+            RunLater(self).run(_load_devices, on_done=_done_devices,
+                               on_error=self._devices_load_failed)
         else:
             self.devices_label.setText("登录后可查看设备")
 
         self.refresh_license_status()
 
+    def _sub_load_failed(self, msg):
+        self.subscription_label.setText(f"订阅状态获取失败：{msg}")
+
+    def _plans_load_failed(self, msg):
+        self.plans_label.setText(f"计划获取失败：{msg}")
+
+    def _devices_load_failed(self, msg):
+        self.devices_label.setText(f"设备获取失败：{msg}")
+
     def refresh_license_status(self):
-        from ..licensing.client_license import offline_status
+        from ...licensing.client_license import offline_status
         cached = self.ctx.license_store.load()
         status = offline_status(cached)
         reason_text = {
