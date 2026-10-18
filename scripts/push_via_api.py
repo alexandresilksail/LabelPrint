@@ -57,10 +57,14 @@ def _git(*args: str, cwd: Path) -> str:
 
 
 def collect_files(root: Path) -> list[tuple[str, bytes, str]]:
-    """读取 HEAD 中所有受管文件的内容与索引内记录的真实文件模式。
+    """读取 HEAD 中所有受管文件的提交态内容与索引内记录的真实文件模式。
 
-    不能用 os.access(path, os.X_OK) 判断可执行位：Windows 上它几乎恒为真，
-    会把全部文件推成 100755，导致下游 clone 后所有文件都带可执行位。
+    内容取自 **git 对象库**（`git cat-file blob <sha>`）而不是工作区文件：
+    工作区在 Windows 上可能是 CRLF，而仓库内规范化存储为 LF，直接读磁盘会
+    使远端 blob 与本地提交的 blob 哈希不一致（内容语义相同但字节不同）。
+
+    模式同样不能靠 `os.access(path, os.X_OK)` 判断：该调用在 Windows 上几乎
+    恒为真，会把全部文件推成 100755，导致下游 clone 后所有文件带可执行位。
     """
     listing = _git("ls-files", "-s", "-z", cwd=root).split("\0")
     files: list[tuple[str, bytes, str]] = []
@@ -69,15 +73,19 @@ def collect_files(root: Path) -> list[tuple[str, bytes, str]]:
             continue
         # 格式：<mode> <sha> <stage>\t<path>
         meta, _, rel = entry.partition("\t")
-        if not rel:
+        parts = meta.split()
+        if not rel or len(parts) < 2:
             continue
-        mode = meta.split(" ", 1)[0] if meta else "100644"
+        mode, sha = parts[0], parts[1]
+        if len(parts) > 2 and parts[2] != "0":
+            continue             # 索引存在冲突，提交态不确定，跳过
         if mode not in ("100644", "100755", "120000"):
             mode = "100644"      # 子模块等特殊类型按普通文件处理
-        path = root / rel
-        if not path.is_file():
+        content = subprocess.run(["git", "cat-file", "blob", sha], cwd=root,
+                                 capture_output=True)
+        if content.returncode != 0:
             continue
-        files.append((rel, path.read_bytes(), mode))
+        files.append((rel, content.stdout, mode))
     return files
 
 
