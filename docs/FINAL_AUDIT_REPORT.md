@@ -115,14 +115,47 @@ OK
 
 ## 8. GitHub 推送状态
 
-远端 `https://github.com/alexandresilksail/LabelPrint` 推送**仍未完成**：两次提供的
-access token 均被环境密钥保护机制脱敏/失效，无法在会话内完成鉴权。本地 10 次提交
-已就绪，执行以下任一方式即可推送：
+远端 `https://github.com/alexandresilksail/LabelPrint` 已有 1 个早期提交
+（`0027109`，68 个条目，README 3018 字节），本地当前 10 个提交、131 个受管文件、
+README 4721 字节 —— **远端落后 9 个提交**。
+
+实测阻塞原因（两项，均为环境侧）：
+
+| 检查 | 结果 |
+|---|---|
+| `curl https://github.com` | `CONNECT tunnel failed, response 502`（代理隧道拒绝） |
+| `git ls-remote origin` | `schannel: failed to receive handshake`（TLS 握手失败） |
+| `curl https://api.github.com` | `200`（可达） |
+| `curl https://codeload.github.com` | `301`（可达） |
+| 此前两次 access token | 被环境密钥保护机制脱敏 / 已失效 |
+
+即：**git 协议端点 github.com 被网络策略阻断**，即使有有效令牌也无法 `git push`；
+而 REST API 端点可达。因此提供三条可选路径：
+
+### 路径 A（推荐）在可直连 GitHub 的机器上推送
 
 ```bash
-git remote add origin https://github.com/alexandresilksail/LabelPrint.git
-git push -u origin main          # 使用本机已配置的凭据
+git clone https://github.com/alexandresilksail/LabelPrint.git
+cd LabelPrint
+git bundle unbundle /path/to/LabelPrint-main.bundle     # 或 git pull <bundle> main
+git checkout main && git push origin main
 ```
+
+### 路径 B 用本仓库的 API 推送脚本（需有效令牌）
+
+```bat
+set GITHUB_TOKEN=<你的令牌>
+python scripts\push_via_api.py alexandresilksail/LabelPrint main
+```
+
+脚本读取 `git ls-files` 内容，经 api.github.com 创建 blob/tree/commit 并更新
+`refs/heads/main`；已存在分支时以上一次远端提交为 parent（不丢远端历史），
+单次运行把本地多提交压成一个提交。
+
+### 路径 C 离线导入
+
+仓库根目录外已生成 `LabelPrint-main.bundle`（235 KB，`git bundle verify` 通过，
+记录完整历史至 `cb08cdf`），可在任意环境 `git clone` / `git fetch` 导入。
 
 ## 9. 验收判定
 
