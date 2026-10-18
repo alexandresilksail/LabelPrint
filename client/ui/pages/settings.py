@@ -1,5 +1,7 @@
 """设置页：数据备份、恢复、完整性校验、关于。"""
 
+import sys
+
 from PySide6.QtWidgets import (
     QFileDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton,
     QVBoxLayout, QWidget,
@@ -10,6 +12,7 @@ from ..widgets import (
     notify_main,
 )
 from ...barcode.service import BarcodeService
+from ... import __version__
 
 
 class SettingsPage(QWidget):
@@ -57,6 +60,9 @@ class SettingsPage(QWidget):
         about_card.body.addWidget(MutedLabel(
             "专业 UPC/EAN 条码管理与标签打印工具\n"
             "本地优先 · GS1 来源可追溯 · 离线授权宽限"))
+        about_card.body.addWidget(MutedLabel(
+            f"版本 {__version__} · Python {sys.version.split()[0]}"
+            + (" · 安装版" if getattr(sys, "frozen", False) else " · 源码运行")))
         layout.addWidget(about_card)
 
         layout.addStretch(1)

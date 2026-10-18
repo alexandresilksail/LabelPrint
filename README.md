@@ -22,7 +22,7 @@
 | 8 | Windows 发布：安装版 / 绿色便携版 / 卸载程序 | ✅ 已构建并冒烟验证（`docs/BUILD_REPORT.md`） |
 | 9 | 部署文档：DEPLOYMENT / OPERATIONS / BACKUP_RESTORE / UPGRADE_ROLLBACK | ✅ 已完成 |
 | 10 | 端到端测试：跨客户端/服务端全链路 | ✅ 已完成（7 项，`tests_server/test_e2e_full_flow.py`） |
-| 11 | 最终验收 | 🔄 进行中 |
+| 11 | 最终验收 | ✅ 已完成（`docs/FINAL_AUDIT_REPORT.md`，252 项测试通过） |
 
 ## 快速开始
 

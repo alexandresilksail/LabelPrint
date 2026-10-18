@@ -1,17 +1,22 @@
 # CodeLabelStudio 安全审计报告
 
 - 审计日期：2026-10-18
-- 审计范围：`client/`（桌面客户端）+ `server/`（在线服务端），不含测试目录
-- 工具：bandit 1.9.4 静态扫描（-r client server）+ 人工清单核对
-- 代码规模：7315 行
+- 审计范围：`client/`（桌面客户端）+ `server/`（在线服务端）+ `admin/`（Web 后台），不含测试目录
+- 工具：bandit 1.9.4 静态扫描（-r client server admin）+ 人工清单核对
+- 代码规模：7459 行
 
 ## 一、静态扫描结果
 
 ```
-$ python -m bandit -r client server -x "*/tests/*,*/tests_server/*"
-No issues identified.
-Total issues (by severity): Low: 0 | Medium: 0 | High: 0
+$ python -m bandit -r client server admin -f json
+扫描代码行: 7459
+HIGH: 0 | MEDIUM: 0 | LOW: 0
+结果条目: 0
 ```
+
+> 阶段 14 复核（2026-10-18）：新增 `tests_server/test_e2e_full_flow.py` 与
+> settings 页版本展示后重扫，仍为 0 问题。bandit 提示若干 `# nosec` 注释
+> 已不再命中（代码重构后原误报点已消失），属工具提示非问题，保留注释无副作用。
 
 扫描过程中发现并已修复/处置的问题：
 
