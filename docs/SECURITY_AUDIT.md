@@ -1,18 +1,21 @@
 # CodeLabelStudio 安全审计报告
 
-- 审计日期：2026-10-18
+- 审计日期：2026-10-18（第二轮修复后复核）
 - 审计范围：`client/`（桌面客户端）+ `server/`（在线服务端）+ `admin/`（Web 后台），不含测试目录
 - 工具：bandit 1.9.4 静态扫描（-r client server admin）+ 人工清单核对
-- 代码规模：7459 行
+- 代码规模：8111 行
 
 ## 一、静态扫描结果
 
 ```
 $ python -m bandit -r client server admin -f json
-扫描代码行: 7459
+扫描代码行: 8111
 HIGH: 0 | MEDIUM: 0 | LOW: 0
 结果条目: 0
 ```
+
+> 第二轮复核（2026-10-18，本审计修复后）：新增 `server/app/netutil.py`、
+> `server/services/outbox.py` 与四个测试文件后重扫，仍为 0 问题。
 
 > 阶段 14 复核（2026-10-18）：新增 `tests_server/test_e2e_full_flow.py` 与
 > settings 页版本展示后重扫，仍为 0 问题。bandit 提示若干 `# nosec` 注释
@@ -61,17 +64,63 @@ HIGH: 0 | MEDIUM: 0 | LOW: 0
 - [x] 源完整性 / schema / 版本三重校验
 - [x] 临时文件 + `os.replace` 原子替换；恢复后 quick_check + JSONL 审计日志
 
-## 三、已知限制与后续建议
+## 三、第二轮审计修复（2026-10-18）
+
+### 3.1 限流 IP 信任（高危，已修复）
+
+- **问题**：`request_client_ip()` 无条件读取 `X-Forwarded-For` 首个值，
+  任意客户端改一个请求头即可为每次请求伪造新 IP，注册/登录限流形同虚设。
+- **修复**：新增 `server/app/netutil.py`，默认使用连接对端地址；仅当对端
+  落在 `CLS_TRUSTED_PROXIES` 内才解析转发头，且**从右往左**剥离可信代理，
+  取第一个不可信地址（防最左伪造）；链中含非法值失败关闭。
+- **多 worker**：新增 `RedisRateLimiter`（INCR + EXPIRE 固定窗口）；生产
+  `memory + workers>1` 在配置校验阶段直接拒绝启动，避免"限流配额 × worker 数"
+  被误当成高可用部署。
+- **证据**：`tests_server/test_trusted_proxy.py` 28 项（含伪造头端到端断言 429）。
+
+### 3.2 订单方案复用（中危，已修复）
+
+- **问题**：复用待付款订单时只按 `user_id + pending` 匹配，用户从月付切年付
+  会拿到旧的月付订单（金额、方案都不对）。
+- **修复**：复用时校验 `plan_id / amount / currency`；不一致则取消旧单
+  （写 `order_canceled` 事件 + 审计日志）并新建；新增部分唯一索引
+  `uq_order_user_pending`，并发撞索引后重查复用。
+- **证据**：`tests_server/test_orders_plan_switch.py` 8 项（含 6 线程并发）。
+
+### 3.3 生产启动检查（中危，已修复）
+
+- **问题**：生产缺密钥/邮件/CORS 时仍能启动；授权私钥在文件缺失时**静默生成**
+  新密钥，重启即让全部已签发授权失效，而服务仍对外"正常"。
+- **修复**：`Settings.production_errors()` 一次性校验密钥强度、数据库类型、
+  SMTP 完整性、CORS 白名单、HTTPS 基础地址、授权私钥、限流后端与 worker 数、
+  可信代理配置；不通过即抛 `ConfigError` 拒绝启动。`licensing` 生产不再生成密钥，
+  并新增启动自检（签名/验签闭环 + 篡改载荷必须验签失败）与公钥指纹。
+- **证据**：`tests_server/test_production_config.py` 26 项。
+
+### 3.4 付款确认事务与通知（中危，已修复）
+
+- **问题**：`confirm_payment()` 里订阅激活内部 `commit()`，邮件在事务中直接
+  发送——邮件失败会让订单已确认却抛异常，事务边界也不完整。
+- **修复**：订阅激活支持 `commit=False` 并入外层事务；通知改为**事务性发件箱**
+  （`outbox_messages`，`dedupe_key` 唯一），提交后投递，失败按指数退避重试，
+  5 次后标记 `dead`；重复确认被订单状态拦下（409）。
+- **证据**：`tests_server/test_payment_outbox.py` 11 项（邮件异常、提交失败回滚、
+  重复确认、并发确认、去重、退避）。
+
+## 四、已知限制与后续建议
 
 | # | 事项 | 说明 |
 | --- | --- | --- |
-| L1 | 限流为进程内实现 | 多 worker 部署需改用 Redis 共享计数（`server/app/security.py` 已注明） |
-| L2 | 邮箱发送为 console/smtp 双后端 | 生产需配置真实 SMTP 或事务邮件服务 |
-| L3 | SQLite 单文件数据库 | 服务端生产建议 PostgreSQL（requirements 已含 psycopg2-binary） |
+| L1 | ~~限流为进程内实现~~ | **已修复**：支持 Redis 共享后端；`memory + 多 worker` 被启动校验拒绝 |
+| L2 | ~~邮箱发送为 console/smtp 双后端~~ | **已加固**：生产强制 `smtp` 且校验完整性；付款通知走 outbox 可重试 |
+| L3 | SQLite 单文件数据库 | 服务端生产建议 PostgreSQL；生产指向 SQLite 需显式 `CLS_ALLOW_SQLITE_IN_PROD=1` |
 | L4 | 条码可扫描性依赖像素往返测试 | 正式发布前需真实扫描器 + 标签纸人工验证（审计报告 R6） |
 | L5 | 客户端授权缓存为明文 JSON | 设备本地文件不可避免；已限 600 权限 + 验签兜底 |
+| L6 | 支付回调未接入真实服务商 | `process_webhook()` 保持一律拒绝，接入前需实现签名验证与幂等 |
+| L7 | 邮箱验证/重置邮件仍为同步发送 | 付款通知已 outbox 化；认证邮件失败可由"重发验证"补偿，暂不改造 |
+| L8 | Redis 故障默认失败关闭 | 可用性优先时可设 `CLS_RATE_LIMIT_FAIL_OPEN=1`，需同步监控暴力破解 |
 
-## 四、结论
+## 五、结论
 
-静态扫描 0 问题；人工清单全部通过。阶段 10 安全审计完成，未发现高危漏洞。
-剩余事项均为部署环境相关的加固建议，已在部署文档中给出方案。
+静态扫描 0 问题；人工清单全部通过；第二轮四项审计问题已修复并有对应测试
+（新增 73 项服务端测试）。剩余为部署环境相关加固与未接入的外部服务。

@@ -17,7 +17,7 @@ import sys
 from sqlalchemy import select
 
 from .app.config import settings
-from .app.database import SessionLocal, create_all
+from .app.database import SessionLocal, create_all, missing_tables
 from .app.models import Plan, User
 from .app.security import hash_password
 
@@ -95,7 +95,16 @@ def settings_env(name: str, default: str) -> str:
 def main() -> int:
     print(f"[seed] 数据库: {settings.database_url}")
     print(f"[seed] 环境: {settings.env}")
-    create_all()
+    if settings.is_production:
+        # 生产不允许用 create_all 绕过迁移：表结构必须由 alembic 管理，
+        # 否则后续 ALTER 迁移会在已存在的表上失败或产生分歧。
+        missing = missing_tables()
+        if missing:
+            print("[seed] 拒绝执行：生产库缺少表 " + "、".join(sorted(missing)))
+            print("[seed] 请先执行：alembic upgrade head")
+            return 2
+    else:
+        create_all()
     with SessionLocal() as db:
         created_plans = seed_plans(db)
         created_admin, admin_name = seed_admin(db)

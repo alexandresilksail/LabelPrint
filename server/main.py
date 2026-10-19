@@ -14,6 +14,7 @@
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,9 +23,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from .app.config import settings
+from .app import licensing
+from .app.config import ConfigError, settings
 from .api import account, admin, auth, license, orders
-from .app.database import SessionLocal
+from .app.database import SessionLocal, missing_tables
+from .services import outbox
 from .services.auth import AuthError
 from .services.license import LicenseError
 from .services.orders import OrderError
@@ -36,13 +39,49 @@ logger = logging.getLogger("codelabel.http")
 API_PREFIX = "/api"
 
 
+def validate_runtime() -> None:
+    """启动前校验：配置不满足要求就拒绝启动，而不是带病运行。
+
+    - 生产：配置完整性 + 数据库表是否由迁移建好；
+    - 全部环境：授权密钥签名/验签自检（密钥损坏时必须立刻暴露）。
+    """
+    if settings.is_production:
+        settings.validate_for_production()
+        missing = missing_tables()
+        if missing:
+            raise ConfigError(
+                "生产数据库缺少表：" + "、".join(sorted(missing)) +
+                "。请先执行 alembic upgrade head")
+    licensing.self_test()
+    logger.info("运行时校验通过 env=%s license_key_fp=%s key_source=%s "
+                "limiter=%s workers=%s",
+                settings.env, licensing.key_fingerprint(),
+                licensing.key_source(), settings.rate_limit_backend,
+                settings.workers)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """启动时补投上一次进程遗留的 outbox 消息（崩溃恢复）。"""
+    try:
+        with SessionLocal() as session:
+            stats = outbox.dispatch_pending(session)
+            if stats["scanned"]:
+                logger.info("启动补投 outbox：%s", stats)
+    except Exception:                 # noqa: BLE001 - 不应阻断启动
+        logger.exception("启动补投 outbox 失败（不影响服务启动）")
+    yield
+
+
 def create_app() -> FastAPI:
+    validate_runtime()
     app = FastAPI(
         title="CodeLabel Studio API",
         version="1.0.0",
         description="条码标签工作室在线服务：认证 / 试用 / 订阅 / 订单 / 授权 / 管理后台",
         docs_url="/docs" if not settings.is_production else None,
         redoc_url=None,
+        lifespan=_lifespan,
     )
 
     # ---------- CORS（白名单，禁止 * + 凭据） ----------
@@ -108,9 +147,11 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["ops"])
     def health():
         db_ok = True
+        pending = 0
         try:
             with SessionLocal() as s:
                 s.execute(text("SELECT 1"))
+                pending = outbox.pending_count(s)
         except Exception:
             logger.exception("health check database probe failed")
             db_ok = False
@@ -118,6 +159,11 @@ def create_app() -> FastAPI:
             "status": "ok" if db_ok else "degraded",
             "env": settings.env,
             "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            # 以下字段用于验证多实例配置一致性（不含任何密钥）
+            "rate_limit_backend": settings.rate_limit_backend,
+            "workers": settings.workers,
+            "license_key_fp": licensing.key_fingerprint(),
+            "outbox_pending": pending,
         }
         return JSONResponse(payload, status_code=200 if db_ok else 503)
 

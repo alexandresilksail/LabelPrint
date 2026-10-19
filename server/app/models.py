@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric,
-    String, Text, UniqueConstraint, func,
+    Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric,
+    String, Text, UniqueConstraint, func, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -150,6 +150,11 @@ class Order(Base):
         CheckConstraint(
             "order_status IN ('pending','paid','confirmed','failed',"
             "'refunded','canceled')", name="ck_order_status"),
+        # 同一用户同时只允许一个待付款订单：并发下单在数据库层被兜住，
+        # 不依赖"先查后插"的竞态窗口。
+        Index("uq_order_user_pending", "user_id", unique=True,
+              sqlite_where=text("order_status = 'pending'"),
+              postgresql_where=text("order_status = 'pending'")),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -268,3 +273,35 @@ class AuditLog(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     detail: Mapped[str | None] = mapped_column(Text)  # JSON 摘要，禁存敏感数据
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class OutboxMessage(Base):
+    """事务性发件箱：邮件等副作用在业务事务内落库，提交后再投递。
+
+    解决的问题（审计问题 4）：付款确认过程中直接调用 SMTP，一旦发信
+    失败或超时，订单/订阅已在事务中，无法回滚；反过来若先发信后提交，
+    提交失败就会给用户发出与实际状态不符的通知。
+
+    幂等：`dedupe_key` 唯一，同一业务事件重复入队会被约束拦下。
+    """
+
+    __tablename__ = "outbox_messages"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_outbox_dedupe"),
+        CheckConstraint(
+            "status IN ('pending','sent','failed','dead')",
+            name="ck_outbox_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dedupe_key: Mapped[str] = mapped_column(String(128))
+    topic: Mapped[str] = mapped_column(String(32))
+    recipient: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str] = mapped_column(String(255))
+    body_text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)

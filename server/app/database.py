@@ -53,3 +53,17 @@ def create_all():
     """开发/测试用：直接建表。生产使用 Alembic 迁移。"""
     from . import models  # noqa: F401  （确保模型已注册）
     Base.metadata.create_all(engine)
+
+
+REQUIRED_TABLES = frozenset({
+    "users", "sessions", "plans", "subscriptions", "trials", "orders",
+    "payment_events", "licenses", "devices", "audit_logs",
+    "email_verifications", "password_reset_tokens", "outbox_messages",
+})
+
+
+def missing_tables() -> set[str]:
+    """返回缺失的业务表（生产启动前校验，避免"能起来但一用就 500"）。"""
+    from sqlalchemy import inspect
+    existing = set(inspect(engine).get_table_names())
+    return set(REQUIRED_TABLES) - existing

@@ -9,6 +9,7 @@
 """
 
 import base64
+import hashlib
 import json
 import os
 import stat
@@ -22,9 +23,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from cryptography.hazmat.primitives import serialization
 
-from .config import settings
+from .config import LICENSE_KEY_FILE, settings
 
-_KEY_FILE = Path(__file__).resolve().parents[2] / "data" / "license_private.pem"
+_KEY_FILE = LICENSE_KEY_FILE
+
+
+def key_path() -> Path:
+    """私钥文件路径：环境变量可覆盖（容器挂载 secret 的常见做法）。"""
+    override = getattr(settings, "license_key_file_override", "")
+    return Path(override) if override else _KEY_FILE
 
 
 def canonical_payload(payload: dict) -> bytes:
@@ -34,17 +41,36 @@ def canonical_payload(payload: dict) -> bytes:
 
 
 def _load_or_create_private_key() -> Ed25519PrivateKey:
-    hex_key = settings.license_private_key_hex
+    hex_key = (settings.license_private_key_hex or "").strip()
     if hex_key:
-        raw = bytes.fromhex(hex_key.strip())
+        try:
+            raw = bytes.fromhex(hex_key)
+        except ValueError as exc:
+            raise RuntimeError(
+                "CLS_LICENSE_PRIVATE_KEY 不是合法的十六进制字符串") from exc
+        if len(raw) != 32:
+            raise RuntimeError(
+                f"CLS_LICENSE_PRIVATE_KEY 必须为 32 字节（64 个 hex 字符），"
+                f"当前为 {len(raw)} 字节")
         return Ed25519PrivateKey.from_private_bytes(raw)
-    if _KEY_FILE.exists():
-        data = _KEY_FILE.read_bytes()
-        return serialization.load_pem_private_key(data, password=None)
-    # 开发环境：生成并落盘（生产必须通过环境变量注入）
+    path = key_path()
+    if path.exists():
+        data = path.read_bytes()
+        try:
+            return serialization.load_pem_private_key(data, password=None)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(
+                f"授权私钥文件无法解析：{path}") from exc
+    if settings.is_production:
+        # 生产绝不静默生成：否则每次重启/新容器都会换一把密钥，
+        # 已签发的用户授权全部验签失败，而服务仍然"正常"对外服务。
+        raise RuntimeError(
+            "生产环境未配置授权私钥：请设置 CLS_LICENSE_PRIVATE_KEY"
+            f"（32 字节 hex）或提供 {path}。拒绝自动生成新密钥。")
+    # 开发环境：生成并落盘（重启后保持稳定，便于本地联调）
     key = Ed25519PrivateKey.generate()
-    _KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _KEY_FILE.write_bytes(
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
         key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
@@ -52,7 +78,7 @@ def _load_or_create_private_key() -> Ed25519PrivateKey:
         )
     )
     try:
-        os.chmod(_KEY_FILE, stat.S_IRUSR | stat.S_IWUSR)
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
     return key
@@ -83,6 +109,41 @@ def public_key_b64() -> str:
         format=serialization.PublicFormat.Raw,
     )
     return base64.b64encode(raw).decode("ascii")
+
+
+def key_fingerprint() -> str:
+    """公钥指纹（SHA-256 前 16 位 hex）。
+
+    多 worker / 多容器部署时，各实例日志与 /health 都应输出同一指纹；
+    不一致说明某个实例用了不同的私钥，签发的凭证会互不认账。
+    """
+    digest = hashlib.sha256(get_public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )).hexdigest()
+    return digest[:16]
+
+
+def key_source() -> str:
+    """私钥来源：env | file（用于启动日志排查，不暴露密钥内容）。"""
+    if (settings.license_private_key_hex or "").strip():
+        return "env"
+    if key_path().exists():
+        return "file"
+    return "generated"
+
+
+def self_test() -> None:
+    """启动自检：签名/验签闭环。失败说明密钥损坏或环境异常，拒绝启动。"""
+    probe = {"probe": "codeLabel", "ts": _utc_iso(
+        datetime.now(timezone.utc).replace(tzinfo=None))}
+    signature = sign_payload(probe)
+    if not verify_payload(public_key_b64(), probe, signature):
+        raise RuntimeError("授权签名自检失败：私钥/公钥不匹配")
+    if not verify_payload(public_key_b64(), {**probe, "probe": "tampered"},
+                          signature):
+        return
+    raise RuntimeError("授权签名自检失败：篡改载荷仍然验签通过")
 
 
 def sign_payload(payload: dict) -> str:

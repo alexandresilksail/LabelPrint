@@ -72,8 +72,13 @@ def effective_status(db: Session, user: User) -> str:
 
 
 def activate_subscription(db: Session, user: User, *, plan,
-                          billing_period_days: int) -> Subscription:
-    """付款确认后开通订阅。"""
+                          billing_period_days: int,
+                          commit: bool = True) -> Subscription:
+    """付款确认后开通订阅。
+
+    `commit=False` 用于参与调用方的事务：付款确认必须让订单、订阅、
+    支付事件、审计日志一起提交，中途不能各自 commit。
+    """
     sub = get_subscription(db, user)
     now = utc_now()
     if sub is None:
@@ -85,8 +90,11 @@ def activate_subscription(db: Session, user: User, *, plan,
     sub.plan_id = plan.id
     sub.started_at = now
     sub.expires_at = now + timedelta(days=billing_period_days)
-    db.commit()
-    db.refresh(sub)
+    if commit:
+        db.commit()
+        db.refresh(sub)
+    else:
+        db.flush()
     return sub
 
 

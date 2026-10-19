@@ -33,11 +33,34 @@
 ### 2. 邮件发送失败
 1. 确认 `CLS_SMTP_*` 配置与防火墙出站 465/587；
 2. 查看邮件后端日志（`server/app/mailer.py` 双后端：console/smtp）；
-3. 临时切回 console 后端保证注册流程可走「管理员后台手动验证」通道。
+3. `CLS_MAIL_BACKEND=console` 在生产会被启动校验拒绝（避免通知被静默丢弃），
+   测试环境才允许。
+
+**付款通知走事务性发件箱**，SMTP 故障不影响订单状态：
+
+```sql
+-- 待投递/重试中的通知
+SELECT id, dedupe_key, status, attempts, next_attempt_at, last_error
+FROM outbox_messages WHERE status IN ('pending','failed') ORDER BY id;
+
+-- 已达重试上限（5 次）的失败消息，需要人工排查后重置
+SELECT id, dedupe_key, attempts, last_error FROM outbox_messages WHERE status='dead';
+```
+
+处置步骤：
+1. 修复 SMTP 后，重启服务即会在启动时自动补投（`lifespan` 中调用
+   `dispatch_pending`）；
+2. 需要立即补投时执行 `python -c` 调用 `server.services.outbox.dispatch_pending`；
+3. 确认邮件已补发后，可将 `dead` 记录手工改回 `pending` 并把 `attempts` 归零；
+4. `/health` 的 `outbox_pending` 持续上升 = SMTP 持续故障，按告警处理。
 
 ### 3. 登录被限流
 - 固定窗口按 IP + 路由计数，误封后等待窗口滚动（1 分钟）或调整 `CLS_RL_LOGIN`；
-- 多 worker 部署时限流不共享，属已知限制（见 SECURITY_AUDIT L1）。
+- **多 worker 必须使用 Redis 后端**（`CLS_RATE_LIMIT_BACKEND=redis`）；否则
+  启动校验会因 `memory + workers>1` 拒绝启动；
+- 若所有用户被算成同一 IP，检查 `CLS_TRUSTED_PROXIES` 是否漏配 Nginx 出口地址；
+- Redis 故障时限流默认**失败关闭**（登录直接 429），可临时设
+  `CLS_RATE_LIMIT_FAIL_OPEN=1` 恢复可用性，但需同步盯防暴力破解。
 
 ### 4. 授权验证集中失败
 1. 检查服务端时间（NTP）——离线宽限以服务端时间为准；
