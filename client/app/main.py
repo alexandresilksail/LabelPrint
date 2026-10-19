@@ -33,6 +33,14 @@ def main(argv=None):
 
     window = MainWindow(AppContext())
     window.show()
+
+    # ``--printer-setup``：启动后非模态打开打印机设置向导，不阻塞主窗口；
+    # 枚举不到打印机时向导内部显示空态说明。
+    if "--printer-setup" in argv:
+        from ..ui.printer_setup import PrinterSetup
+        setup = PrinterSetup(window.ctx, parent=window)
+        setup.show()
+
     return app.exec()
 
 

@@ -1,18 +1,43 @@
-"""打印中心：选择编码、套用模板、版面预览、导出 PDF/SVG/PNG/CSV。"""
+"""打印中心：选择编码、套用模板、版面预览、导出 PDF/SVG/PNG/CSV，
+以及真实打印接入（打印机枚举、驱动指引、参数、预览、提交、取消、校准）。
+
+诚信约定：
+- 提交成功只提示“已提交到打印队列”，绝不声称物理打印完成；
+- ``verified_with_hardware=False`` 的设备在状态行加注“未实测”；
+- 驱动只提供官方来源与指引，不自动下载/安装、不禁用签名检查。
+"""
+
+import os
+import tempfile
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton, QScrollArea,
+    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..widgets import (
-    Card, MutedLabel, PrimaryButton, RunLater, error, info, warn,
+    Card, MutedLabel, PrimaryButton, RunLater, confirm, error, info, warn,
 )
 from ...barcode.encoder import encode_with_quiet_zone
+from ...printing.adapters.registry import build_adapter
+from ...printing.calibration import (
+    apply_offset, check_label_geometry, check_module_width, check_quiet_zone,
+    render_test_page_pdf, verify_scale,
+)
+from ...printing.config_store import (
+    PrinterConfigStore, PrinterPrintConfig,
+)
+from ...printing.driver_installer import (
+    ElevationResult, build_driver_guidance, detect_driver_state,
+    elevate_process, install_guidance_for_state,
+)
+from ...printing.errors import PrintError
+from ...printing.job import ValidationIssue
 from ...printing.preview import compute_layout, fit_barcode
-from ...printing.templates import LabelTemplate
+from . import print_export_logic as L
 
 STATUS_LABELS = {
     "generated": "待分配",
@@ -20,6 +45,289 @@ STATUS_LABELS = {
     "used": "已使用",
     "invalidated": "已作废",
 }
+
+
+# ---------------------------------------------------------------------------
+# 驱动安装指引对话框（guidance only：不自动安装、不禁用签名检查）
+# ---------------------------------------------------------------------------
+class DriverGuidanceDialog(QDialog):
+    """展示厂商官方驱动来源与兼容性说明，并允许提权运行用户自备安装程序。
+
+    红线：本对话框不下载、不释放任何驱动；``elevate_process`` 仅启动用户
+    自己从官方渠道下载好的安装程序，由 Windows UAC 完成授权；不提供
+    “跳过签名校验”的旁路。
+    """
+
+    def __init__(self, caps, parent=None):
+        super().__init__(parent)
+        self.caps = caps
+        self.setWindowTitle("驱动安装指引")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        manufacturer = caps.driver.driver_name if caps.driver else None
+        self.guidance = build_driver_guidance(
+            manufacturer or caps.printer_name, caps.printer_name)
+
+        head = QLabel("驱动安装指引（仅指引，本程序不自动安装驱动）")
+        head.setObjectName("Title")
+        layout.addWidget(head)
+
+        form = QFormLayout()
+        form.addRow("设备/队列:", QLabel(caps.printer_name))
+        form.addRow("识别厂商:", QLabel(self.guidance.manufacturer or "未知"))
+        form.addRow("设备型号:", QLabel(self.guidance.model or "未知"))
+        layout.addLayout(form)
+
+        if self.guidance.matched:
+            url = QLabel(f"官方下载页：{self.guidance.official_url}")
+            url.setWordWrap(True)
+            url.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(url)
+            notes = QLabel(f"兼容性说明：{self.guidance.notes}")
+            notes.setWordWrap(True)
+            layout.addWidget(notes)
+            signed = self.guidance.verified_signed
+            signed_text = {True: "已知提供数字签名驱动",
+                            False: "已知未核实签名状态",
+                            None: "签名状态未核实，请在官网页面二次确认"}[signed]
+            layout.addWidget(MutedLabel(f"签名状态：{signed_text}"))
+        else:
+            layout.addWidget(MutedLabel(self.guidance.generic_hint))
+
+        layout.addWidget(MutedLabel(
+            "安全说明：本程序不会自动下载或安装驱动，不会关闭/绕过驱动签名"
+            "检查，也不修改任何 Windows 安全设置。请自行从厂商官方网站下载"
+            "对应型号的 Windows 驱动安装程序。"))
+
+        # ---- 选择用户自备的官方安装程序并提权运行 ----
+        self.path_label = MutedLabel("尚未选择安装程序")
+        btn_pick = QPushButton("选择已下载的官方驱动安装程序…")
+        btn_pick.clicked.connect(self._pick_installer)
+        layout.addWidget(btn_pick)
+        layout.addWidget(self.path_label)
+
+        self.btn_run = QPushButton("以管理员身份运行所选安装程序（UAC 授权）")
+        self.btn_run.setEnabled(False)
+        self.btn_run.clicked.connect(self._run_elevated)
+        layout.addWidget(self.btn_run)
+
+        self.result_label = MutedLabel("")
+        layout.addWidget(self.result_label)
+
+        close = QPushButton("关闭")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close)
+
+    def _pick_installer(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择官方驱动安装程序", "",
+            "安装程序 (*.exe *.msi);;所有文件 (*)")
+        if not path:
+            return
+        self.installer_path = path
+        self.path_label.setText(f"已选择：{path}")
+        self.btn_run.setEnabled(True)
+
+    def _run_elevated(self):
+        path = getattr(self, "installer_path", "")
+        if not path:
+            return
+        try:
+            outcome = elevate_process(path, [])
+        except PrintError as exc:
+            self.result_label.setText(exc.user_message)
+            return
+        text = {
+            ElevationResult.LAUNCHED:
+                "已通过 UAC 发起启动（仅代表安装程序被拉起，不代表安装成功，"
+                "请按安装向导完成并在完成后回到本程序重新检测）。",
+            ElevationResult.REQUIRES_UAC:
+                "需要管理员/UAC 授权但未获得，请在弹出的系统授权框中点“是”。",
+            ElevationResult.CANCELLED_BY_USER:
+                "用户在 UAC 授权框点了“否”，未启动安装程序。",
+            ElevationResult.FAILED:
+                f"启动失败（系统错误码 {outcome.error_code}），请确认文件完整。",
+        }[outcome.status]
+        self.result_label.setText(text)
+
+
+# ---------------------------------------------------------------------------
+# 校准对话框：测试页预览、偏移/间隙/静区/模块宽度、检查结果、配置保存/恢复
+# ---------------------------------------------------------------------------
+class CalibrationDialog(QDialog):
+    """单台打印机的校准与设置对话框。
+
+    - 渲染标准测试页 PDF 并预览；
+    - 偏移/标签间隙/静区/模块宽度输入；
+    - 实时展示 check_quiet_zone / check_module_width /
+      check_label_geometry 结果；
+    - 配置按打印机名独立保存到 PrinterConfigStore，可恢复默认。
+    """
+
+    def __init__(self, caps, config_store, paper=None, parent=None):
+        super().__init__(parent)
+        self.caps = caps
+        self._store = config_store
+        self.setWindowTitle(f"校准与设置 — {caps.printer_name}")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        self.existing = config_store.load(caps.printer_name)
+        paper = paper or (self.existing.paper if self.existing else None)
+        if paper is None:
+            # 无可用纸张时给一个占位（调用方应保证纸张合法）
+            paper = L.pick_paper(caps, 100.0, 100.0)
+        self.paper = paper
+
+        head = QLabel("校准与设置")
+        head.setObjectName("Title")
+        layout.addWidget(head)
+
+        # ---- 测试页预览 ----
+        self.preview_label = MutedLabel("正在生成测试页…")
+        layout.addWidget(self.preview_label)
+        self._render_test_page()
+
+        # ---- 参数 ----
+        form = QFormLayout()
+        self.offset_x = QDoubleSpinBox()
+        self.offset_x.setRange(-500.0, 500.0)
+        self.offset_x.setDecimals(2)
+        self.offset_x.setSingleStep(0.1)
+        self.offset_x.setSuffix(" mm")
+        self.offset_y = QDoubleSpinBox()
+        self.offset_y.setRange(-500.0, 500.0)
+        self.offset_y.setDecimals(2)
+        self.offset_y.setSingleStep(0.1)
+        self.offset_y.setSuffix(" mm")
+        self.gap = QDoubleSpinBox()
+        self.gap.setRange(0.0, 50.0)
+        self.gap.setDecimals(2)
+        self.gap.setSingleStep(0.5)
+        self.gap.setSuffix(" mm")
+        self.quiet = QDoubleSpinBox()
+        self.quiet.setRange(0.0, 50.0)
+        self.quiet.setDecimals(2)
+        self.quiet.setSingleStep(0.1)
+        self.quiet.setSuffix(" mm")
+        self.module = QDoubleSpinBox()
+        self.module.setRange(0.1, 1.0)
+        self.module.setDecimals(3)
+        self.module.setSingleStep(0.01)
+        self.module.setSuffix(" mm")
+        form.addRow("水平偏移:", self.offset_x)
+        form.addRow("垂直偏移:", self.offset_y)
+        form.addRow("标签间隙:", self.gap)
+        form.addRow("静区宽度:", self.quiet)
+        form.addRow("模块宽度:", self.module)
+        layout.addLayout(form)
+
+        # 回填已保存配置
+        if self.existing is not None:
+            self.offset_x.setValue(self.existing.offset_x_mm)
+            self.offset_y.setValue(self.existing.offset_y_mm)
+            self.gap.setValue(self.existing.label_gap_mm)
+            if self.existing.quiet_zone_mm is not None:
+                self.quiet.setValue(self.existing.quiet_zone_mm)
+            if self.existing.module_mm is not None:
+                self.module.setValue(self.existing.module_mm)
+
+        # ---- 检查结果 ----
+        self.check_label = MutedLabel("")
+        layout.addWidget(self.check_label)
+        for w in (self.offset_x, self.offset_y, self.gap,
+                  self.quiet, self.module):
+            w.valueChanged.connect(self._refresh_checks)
+        self._refresh_checks()
+
+        # ---- 按钮 ----
+        row = QHBoxLayout()
+        btn_save = PrimaryButton("保存配置")
+        btn_save.clicked.connect(self._save)
+        btn_reset = QPushButton("恢复默认")
+        btn_reset.clicked.connect(self._reset)
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(self.accept)
+        row.addWidget(btn_save)
+        row.addWidget(btn_reset)
+        row.addStretch(1)
+        row.addWidget(btn_close)
+        layout.addLayout(row)
+
+    # ---------------- 测试页 ----------------
+    def _render_test_page(self):
+        try:
+            fd, path = tempfile.mkstemp(suffix=".pdf", prefix="calib_test_")
+            os.close(fd)
+            render_test_page_pdf(path, self.paper)
+            try:
+                from ...printing.pdf_render import rasterize_preview
+                paths = rasterize_preview(path, dpi=150, max_pages=1)
+            except PrintError as exc:
+                self.preview_label.setText(f"测试页已生成，预览不可用："
+                                           f"{exc.user_message}")
+                return
+            if paths:
+                pix = QPixmap(paths[0])
+                if not pix.isNull():
+                    self.preview_label.setPixmap(
+                        pix.scaledToWidth(360, Qt.SmoothTransformation))
+                    return
+            self.preview_label.setText("测试页已生成（无预览图）")
+        except PrintError as exc:
+            self.preview_label.setText(f"测试页生成失败：{exc.user_message}")
+
+    # ---------------- 检查 ----------------
+    def _refresh_checks(self):
+        issues = []
+        q = check_quiet_zone(self.module.value(), 11)
+        if q:
+            issues.append(q)
+        mw = check_module_width(self.module.value())
+        if mw:
+            issues.append(mw)
+        issues.extend(check_label_geometry(
+            self.paper, self.caps, self.gap.value()))
+        if not issues:
+            self.check_label.setText("检查结果：全部通过")
+            return
+        lines = [f"[{i.severity}] {i.message}" for i in issues]
+        self.check_label.setText("检查结果：\n" + "\n".join(lines))
+
+    # ---------------- 保存 / 恢复 ----------------
+    def _save(self):
+        base = self.existing or self._store.defaults(self.caps.printer_name)
+        cfg = PrinterPrintConfig(
+            printer_name=self.caps.printer_name,
+            offset_x_mm=self.offset_x.value(),
+            offset_y_mm=self.offset_y.value(),
+            paper=self.paper,
+            dpi=base.dpi,
+            quality=base.quality,
+            default_copies=base.default_copies,
+            label_gap_mm=self.gap.value(),
+            quiet_zone_mm=self.quiet.value(),
+            module_mm=self.module.value(),
+            use_calibration=True,
+        )
+        self._store.save(cfg)
+        info(self, "配置已保存",
+             f"已按打印机「{self.caps.printer_name}」独立保存校准配置。")
+
+    def _reset(self):
+        ok = self._store.reset(self.caps.printer_name)
+        self.offset_x.setValue(0.0)
+        self.offset_y.setValue(0.0)
+        self.gap.setValue(0.0)
+        self.quiet.setValue(0.0)
+        self.module.setValue(0.33)
+        self._refresh_checks()
+        info(self, "恢复默认",
+             "已删除该打印机的本地配置，恢复默认值。" if ok
+             else "该打印机没有已保存的配置。")
 
 
 class SheetPreviewWidget(QWidget):
@@ -104,6 +412,11 @@ class PrintPage(QWidget):
         self.main = main_window
         self.records = []
         self.templates = []
+        self._printers = []
+        self._current_caps = None
+        self._adapter = None
+        self._job_id = None
+        self._config_store = PrinterConfigStore(ctx.data_dir / "printer_configs")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
@@ -133,7 +446,7 @@ class PrintPage(QWidget):
         mid.body.addWidget(self.preview)
         top.addWidget(mid, 3)
 
-        # ---- 右：模板与导出 ----
+        # ---- 右：模板与导出 + 打印机与打印 ----
         right = Card("模板与导出")
         self.template_combo = QComboBox()
         right.body.addWidget(QLabel("标签模板"))
@@ -153,6 +466,8 @@ class PrintPage(QWidget):
             btn = QPushButton(text)
             btn.clicked.connect(handler)
             right.body.addWidget(btn)
+
+        self._build_print_section(right.body)
         right.body.addStretch(1)
         top.addWidget(right, 2)
         layout.addLayout(top)
@@ -160,6 +475,382 @@ class PrintPage(QWidget):
 
         self.reload_records()
         self.reload_templates()
+        self.refresh_printers()
+
+    # ================== 打印机与打印区块 ==================
+    def _build_print_section(self, body):
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        body.addWidget(divider)
+        section = QLabel("打印机与打印")
+        section.setObjectName("Title")
+        body.addWidget(section)
+
+        # 打印机选择 + 刷新
+        row = QHBoxLayout()
+        self.printer_combo = QComboBox()
+        self.printer_combo.currentIndexChanged.connect(self._on_printer_changed)
+        row.addWidget(self.printer_combo, 1)
+        self.btn_refresh_printers = QPushButton("刷新打印机")
+        self.btn_refresh_printers.clicked.connect(self.refresh_printers)
+        row.addWidget(self.btn_refresh_printers)
+        body.addLayout(row)
+
+        self.printer_status_label = MutedLabel("尚未枚举打印机")
+        body.addWidget(self.printer_status_label)
+        self.driver_state_label = MutedLabel("")
+        body.addWidget(self.driver_state_label)
+        self.btn_driver_guidance = QPushButton("驱动安装指引")
+        self.btn_driver_guidance.clicked.connect(self.open_driver_guidance)
+        body.addWidget(self.btn_driver_guidance)
+
+        # 参数
+        form = QFormLayout()
+        self.paper_combo = QComboBox()
+        form.addRow("纸张:", self.paper_combo)
+        self.orientation_combo = QComboBox()
+        self.orientation_combo.addItem("纵向 portrait", "portrait")
+        self.orientation_combo.addItem("横向 landscape", "landscape")
+        form.addRow("方向:", self.orientation_combo)
+        self.copies_spin = QSpinBox()
+        self.copies_spin.setRange(1, 999)
+        self.copies_spin.setValue(1)
+        form.addRow("份数:", self.copies_spin)
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItem("草稿 draft", "draft")
+        self.quality_combo.addItem("标准 normal", "normal")
+        self.quality_combo.addItem("高清 high", "high")
+        form.addRow("质量:", self.quality_combo)
+        self.offset_x_spin = QDoubleSpinBox()
+        self.offset_x_spin.setRange(-500.0, 500.0)
+        self.offset_x_spin.setDecimals(2)
+        self.offset_x_spin.setSingleStep(0.1)
+        self.offset_x_spin.setSuffix(" mm")
+        form.addRow("水平偏移:", self.offset_x_spin)
+        self.offset_y_spin = QDoubleSpinBox()
+        self.offset_y_spin.setRange(-500.0, 500.0)
+        self.offset_y_spin.setDecimals(2)
+        self.offset_y_spin.setSingleStep(0.1)
+        self.offset_y_spin.setSuffix(" mm")
+        form.addRow("垂直偏移:", self.offset_y_spin)
+        body.addLayout(form)
+
+        # 操作按钮
+        self.btn_preview = QPushButton("打印预览")
+        self.btn_preview.clicked.connect(lambda: self._prepare_job(False))
+        self.btn_print = PrimaryButton("打印")
+        self.btn_print.clicked.connect(lambda: self._prepare_job(True))
+        self.btn_cancel = QPushButton("取消任务")
+        self.btn_cancel.clicked.connect(self.cancel_current_job)
+        self.btn_calibrate = QPushButton("校准与设置")
+        self.btn_calibrate.clicked.connect(self.open_calibration)
+        for b in (self.btn_preview, self.btn_print, self.btn_cancel,
+                  self.btn_calibrate, self.btn_driver_guidance):
+            body.addWidget(b)
+
+        self._set_print_controls_enabled(False)
+
+    def _set_print_controls_enabled(self, enabled: bool):
+        for b in (self.btn_preview, self.btn_print, self.btn_cancel,
+                  self.btn_calibrate, self.btn_driver_guidance,
+                  self.paper_combo, self.orientation_combo,
+                  self.copies_spin, self.quality_combo,
+                  self.offset_x_spin, self.offset_y_spin):
+            b.setEnabled(enabled)
+
+    # ---------------- 枚举 ----------------
+    def refresh_printers(self):
+        """刷新打印机：合并 win32print 与 Qt 两路枚举（后台线程，防阻塞）。"""
+        def _do():
+            enum = []
+            try:
+                from ...printing.windows_print import (
+                    list_printers, windows_print_available)
+                if windows_print_available():
+                    enum.extend(list_printers())
+            except PrintError:
+                pass
+            try:
+                from ...printing.qt_print import (
+                    list_qt_printers, qt_print_available)
+                if qt_print_available():
+                    enum.extend(list_qt_printers())
+            except PrintError:
+                pass
+            return L.merge_capabilities_list(enum)
+
+        RunLater(self).run(
+            _do, on_done=self.set_printers,
+            on_error=lambda m: error(self, "刷新打印机失败", m))
+
+    def set_printers(self, printers):
+        """用枚举（或测试注入）的能力列表填充下拉并刷新状态。"""
+        self._printers = list(printers or [])
+        self.printer_combo.blockSignals(True)
+        self.printer_combo.clear()
+        if not self._printers:
+            self.printer_combo.addItem(
+                "未检测到打印机（需 Windows + 打印服务）", None)
+            self._current_caps = None
+        else:
+            for caps in self._printers:
+                label = caps.printer_name + ("（默认）" if caps.is_default else "")
+                self.printer_combo.addItem(label, caps)
+            idx = next((i for i, c in enumerate(self._printers)
+                        if c.is_default), 0)
+            self.printer_combo.setCurrentIndex(idx)
+        self.printer_combo.blockSignals(False)
+        self._apply_current_caps()
+
+    def _on_printer_changed(self):
+        self._apply_current_caps()
+
+    def _apply_current_caps(self):
+        caps = self.printer_combo.currentData()
+        self._current_caps = caps
+        if caps is None:
+            self.printer_status_label.setText(
+                "未检测到打印机（需 Windows + 打印服务）；导出功能不受影响")
+            self.driver_state_label.setText("")
+            self._set_print_controls_enabled(False)
+            return
+
+        self._set_print_controls_enabled(True)
+        summary = L.summarize_capabilities(caps)
+        if not caps.verified_with_hardware:
+            summary += "（未实测：未经真实设备验证，请先以测试页复核）"
+        self.printer_status_label.setText(summary)
+
+        state = detect_driver_state(
+            caps.printer_name,
+            has_queue=True,
+            driver_name=caps.driver.driver_name if caps.driver else None,
+            is_offline=bool(caps.status and caps.status.offline),
+        )
+        self.driver_state_label.setText(install_guidance_for_state(state))
+
+        self._populate_papers()
+        self._load_printer_config(caps.printer_name)
+
+    def _populate_papers(self):
+        caps = self._current_caps
+        self.paper_combo.blockSignals(True)
+        self.paper_combo.clear()
+        if caps and caps.supported_papers:
+            for p in caps.supported_papers:
+                self.paper_combo.addItem(
+                    f"{p.name} {p.width_mm:g}x{p.height_mm:g}mm", p)
+        t = self.current_template()
+        w = getattr(t, "paper_width", None)
+        h = getattr(t, "paper_height", None)
+        if w and h:
+            custom = L.pick_paper(caps, w, h)
+            note = L.paper_choice_note(caps, custom)
+            self.paper_combo.addItem(f"{custom.name}（{note}）", custom)
+        self.paper_combo.blockSignals(False)
+
+    def _load_printer_config(self, name: str):
+        cfg = self._config_store.load(name)
+        if cfg is None:
+            return
+        self.offset_x_spin.setValue(cfg.offset_x_mm)
+        self.offset_y_spin.setValue(cfg.offset_y_mm)
+        self.copies_spin.setValue(cfg.default_copies)
+        q_idx = self.quality_combo.findData(cfg.quality.value)
+        if q_idx >= 0:
+            self.quality_combo.setCurrentIndex(q_idx)
+        if cfg.paper is not None:
+            for i in range(self.paper_combo.count()):
+                p = self.paper_combo.itemData(i)
+                if hasattr(p, "width_mm") and \
+                        abs(p.width_mm - cfg.paper.width_mm) < 0.5 and \
+                        abs(p.height_mm - cfg.paper.height_mm) < 0.5:
+                    self.paper_combo.setCurrentIndex(i)
+                    break
+
+    def _collect_form(self, template) -> dict:
+        caps = self._current_caps
+        cfg = self._config_store.load(caps.printer_name) if caps else None
+        return {
+            "paper": self.paper_combo.currentData(),
+            "orientation": self.orientation_combo.currentData(),
+            "copies": self.copies_spin.value(),
+            "quality": self.quality_combo.currentData(),
+            "dpi": cfg.dpi if cfg else None,
+            "offset_x_mm": self.offset_x_spin.value(),
+            "offset_y_mm": self.offset_y_spin.value(),
+            "label_gap_mm": cfg.label_gap_mm if cfg else 0.0,
+            "quiet_zone_mm": cfg.quiet_zone_mm if cfg else None,
+            "module_mm": cfg.module_mm if cfg else None,
+        }
+
+    # ---------------- 打印准备 / 预览 / 提交 ----------------
+    def _prepare_job(self, submit_after: bool):
+        items = self.selected_items()
+        if not items:
+            warn(self, "未选择", "请先在左侧表格选择要打印的编码")
+            return
+        t = self.current_template()
+        if not t:
+            warn(self, "未选择模板", "请先选择标签模板")
+            return
+        caps = self._current_caps
+        if caps is None:
+            error(self, "无可用打印机",
+                  "未检测到可用打印机（需 Windows + 打印服务），无法提交打印")
+            return
+
+        form = self._collect_form(t)
+        job = L.build_job_from_form(t, caps, form)
+        # 应用校准偏移（返回副本，不改写原规格）
+        job = apply_offset(job, job.offset_x_mm, job.offset_y_mm)
+
+        def _do():
+            adapter = build_adapter(caps)
+            expanded = [it for it in items for _ in range(t.copies)]
+            fd, pdf_path = tempfile.mkstemp(
+                suffix=".pdf", prefix="label_print_")
+            os.close(fd)
+            meta = render_label_sheet_pdf(expanded, t, pdf_path)
+            job.pdf_path = pdf_path
+            issues = adapter.validate_job(job)
+            errors, warnings = L.group_issues(issues)
+            try:
+                scale = verify_scale(pdf_path, job.paper,
+                                     job.scale_tolerance_mm)
+                if scale is not None and not scale.ok:
+                    for wmsg in scale.warnings:
+                        warnings.append(
+                            ValidationIssue.warning("SCALE_MISMATCH", wmsg))
+            except PrintError:
+                pass
+            return {
+                "adapter": adapter, "job": job, "errors": errors,
+                "warnings": warnings, "meta": meta,
+                "submit_after": submit_after,
+            }
+
+        RunLater(self).run(
+            _do, on_done=self._on_prepared,
+            on_error=lambda m: error(self, "打印失败", m))
+
+    def _on_prepared(self, payload: dict):
+        errors = payload["errors"]
+        warnings = payload["warnings"]
+        job = payload["job"]
+
+        if errors:
+            msg = "打印校验未通过，已中止提交：\n" + \
+                  "\n".join(f"· [{e.code}] {e.message}" for e in errors)
+            if warnings:
+                msg += "\n\n警告（不阻止提交，供参考）：\n" + \
+                       "\n".join(f"· {w.message}" for w in warnings)
+            error(self, "打印校验未通过", msg)
+            return
+
+        # 打印前预览：rasterize_preview 渲染 PNG 展示，verify_scale 缩放警告
+        paths = []
+        try:
+            from ...printing.pdf_render import rasterize_preview
+            paths = rasterize_preview(job.pdf_path, dpi=150, max_pages=1)
+        except PrintError as exc:
+            warn(self, "预览不可用", exc.user_message)
+
+        self._show_preview_dialog(paths, warnings, job)
+
+        if not payload["submit_after"]:
+            return
+
+        confirm_text = (
+            f"任务：{job.describe()}\n\n"
+            "确认提交到打印队列？提交成功仅代表进入队列，"
+            "不代表物理打印完成，请查看打印机实际输出。")
+        if not confirm(self, "确认提交打印", confirm_text):
+            return
+        self._submit_job(payload["adapter"], job)
+
+    def _show_preview_dialog(self, paths, warnings, job):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("打印预览")
+        dlg.setMinimumSize(420, 520)
+        v = QVBoxLayout(dlg)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        host = QWidget()
+        hv = QVBoxLayout(host)
+        for p in paths:
+            pix = QPixmap(p)
+            if pix.isNull():
+                continue
+            lbl = QLabel()
+            lbl.setPixmap(pix.scaledToWidth(360, Qt.SmoothTransformation))
+            lbl.setAlignment(Qt.AlignCenter)
+            hv.addWidget(lbl)
+        if not paths:
+            hv.addWidget(MutedLabel(
+                "当前环境无法渲染 PDF 预览（需 Windows + PySide6）"))
+        warn_text = "\n".join(f"· {w.message}" for w in warnings)
+        if warn_text:
+            hv.addWidget(MutedLabel("警告：\n" + warn_text))
+        hv.addWidget(MutedLabel(
+            f"任务：{job.describe()}；提交到队列不代表物理打印完成。"))
+        scroll.setWidget(host)
+        v.addWidget(scroll)
+        close = QPushButton("关闭")
+        close.clicked.connect(dlg.accept)
+        v.addWidget(close)
+        dlg.exec()
+
+    def _submit_job(self, adapter, job):
+        def _do():
+            return adapter.submit(job)
+
+        def _done(result):
+            self._adapter = adapter
+            self._job_id = result.job_id
+            # 只声明“已提交到队列”，不声称物理打印完成
+            info(self, "打印队列", result.message)
+
+        RunLater(self).run(
+            _do, on_done=_done,
+            on_error=lambda m: error(self, "打印失败", m))
+
+    def cancel_current_job(self):
+        if self._adapter is None or self._job_id is None:
+            warn(self, "无待取消任务",
+                 "当前没有已提交的任务编号，无法取消")
+            return
+        job_id = self._job_id
+
+        def _do():
+            return self._adapter.cancel(job_id)
+
+        def _done(ok):
+            if ok:
+                info(self, "任务取消", f"打印任务 #{job_id} 已取消")
+                self._job_id = None
+            else:
+                warn(self, "取消失败",
+                     f"找不到或无法取消任务 #{job_id}（可能已完成）")
+
+        RunLater(self).run(
+            _do, on_done=_done,
+            on_error=lambda m: error(self, "取消失败", m))
+
+    # ---------------- 对话框入口 ----------------
+    def open_driver_guidance(self):
+        if self._current_caps is None:
+            warn(self, "无可用打印机", "请先选择打印机")
+            return
+        DriverGuidanceDialog(self._current_caps, self).exec()
+
+    def open_calibration(self):
+        if self._current_caps is None:
+            warn(self, "无可用打印机", "请先选择打印机")
+            return
+        paper = self.paper_combo.currentData()
+        CalibrationDialog(self._current_caps, self._config_store,
+                          paper=paper, parent=self).exec()
 
     # ================== 数据 ==================
     def reload_records(self):
@@ -242,6 +933,9 @@ class PrintPage(QWidget):
         self.preview_info.setText(
             f"每页 {len(slots)} 个标签位；已选 {len(items)} 个编码"
             f"（含份数共 {len(expanded)} 个）")
+        # 模板纸张变化后刷新纸张下拉
+        if self._current_caps is not None:
+            self._populate_papers()
 
     # ================== 导出 ==================
     def _require_selection(self):
@@ -308,7 +1002,7 @@ class PrintPage(QWidget):
             return
         value, barcode_type = items[0]
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出 PNG", f"{value}.png", "PNG (*.png)")
+            self, "导出 PNG", "PNG (*.png)")
         if not path:
             return
 
