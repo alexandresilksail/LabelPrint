@@ -50,6 +50,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 CodeLabelStudio"; Flags: nowait postinstall skipifsilent
+; 可选：勾选“完成后打开打印机设置向导”时，以 --printer-setup 参数启动应用（不安装任何驱动）
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--printer-setup"; Description: "完成后打开打印机设置向导"; Flags: nowait postinstall skipifsilent; Check: DriverSetupChecked
 
 [UninstallDelete]
 ; 卸载时清理日志与缓存，但保留用户数据（见下方 Code 段）
@@ -60,6 +62,13 @@ Type: filesandordirs; Name: "{app}\__pycache__"
 var
   DataDirPage: TInputDirWizardPage;
   KeepData: Boolean;
+  { 打印环境检测页（只读检测，不安装任何驱动） }
+  EnvCheckPage: TWizardPage;
+  EnvMemo: TNewMemo;
+  { 打印机驱动（可选）说明页 }
+  DriverPage: TWizardPage;
+  DriverLabel: TNewStaticText;
+  DriverCheck: TNewCheckBox;
 
 function InitializeSetup(): Boolean;
 begin
@@ -78,6 +87,84 @@ begin
     False, '');
   DataDirPage.Add('数据目录');
   DataDirPage.Values[0] := ExpandConstant('{localappdata}\{#MyAppName}\data');
+
+  { 打印环境检测页（位于数据目录页之后）：只读枚举本机队列，不安装驱动 }
+  EnvCheckPage := CreateMemoPage(
+    DataDirPage.ID,
+    '打印环境检测',
+    '仅检测本机已安装的打印队列，本步骤不安装任何驱动',
+    '下列信息来自系统 Get-Printer（队列名 / 驱动名 / 端口 / 状态），供核对使用。' +
+      #13#10 + '若列表为空，表示当前 Windows 中未检测到打印机队列。',
+    EnvMemo);
+  EnvMemo.Lines.Text := '正在检测本机打印机队列…';
+  EnvMemo.ReadOnly := True;
+  EnvMemo.ScrollBars := ssVertical;
+
+  { 打印机驱动（可选）说明页（位于打印环境检测页之后）：只给指引，不装驱动 }
+  DriverPage := CreateCustomPage(
+    EnvCheckPage.ID,
+    '打印机驱动（可选）',
+    '驱动不进入主安装流程，需从厂商官方渠道单独获取并安装');
+  DriverLabel := TNewStaticText.Create(WizardForm);
+  DriverLabel.Parent := DriverPage.Surface;
+  DriverLabel.Left := 0;
+  DriverLabel.Top := 0;
+  DriverLabel.Width := ScaleX(430);
+  DriverLabel.AutoSize := False;
+  DriverLabel.WordWrap := True;
+  DriverLabel.Height := ScaleY(230);
+  DriverLabel.Caption :=
+    '说明：' + #13#10 +
+    '1. 本安装包不携带、不安装任何打印机驱动；驱动安装不进入主安装流程。' + #13#10 +
+    '2. 请从打印机厂商官方支持/下载页按完整型号单独下载官方 Windows 驱动安装程序，' +
+    '不要使用第三方驱动站或来路不明的安装包。' + #13#10 +
+    '3. 安装前请核对厂商、型号、官方来源页面与兼容性说明（适用的 Windows 版本）。' + #13#10 +
+    '4. 驱动安装需要管理员权限：右键官方安装程序选择"以管理员身份运行"，' +
+    '在 UAC 弹窗中点"是"确认；本程序不做静默安装，不关闭驱动签名检查，' +
+    '不修改组策略或任何安全设置。' + #13#10 +
+    '5. 若驱动安装失败：先在 Windows 中卸载残留驱动 → 重启电脑 → 从官方源' +
+    '重新下载并重装 → 检查打印队列是否恢复。' + #13#10;
+  DriverCheck := TNewCheckBox.Create(WizardForm);
+  DriverCheck.Parent := DriverPage.Surface;
+  DriverCheck.Left := 0;
+  DriverCheck.Top := ScaleY(240);
+  DriverCheck.Width := ScaleX(430);
+  DriverCheck.Caption := '完成后打开打印机设置向导';
+  DriverCheck.Checked := False;
+end;
+
+{ 供 [Run] 段 Check 使用：仅当用户勾选时才以 --printer-setup 启动应用 }
+function DriverSetupChecked: Boolean;
+begin
+  Result := DriverCheck.Checked;
+end;
+
+{ 进入打印环境检测页时，用 PowerShell 只读枚举队列并写入 memo；失败不阻断安装 }
+procedure CurPageChanged(CurPageID: Integer);
+var
+  PSPath, Cmd, OutFile: String;
+  Ok: Boolean;
+  ResultCode: Integer;
+begin
+  if CurPageID <> EnvCheckPage.ID then
+    Exit;
+  OutFile := ExpandConstant('{tmp}\printers.txt');
+  PSPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  Cmd := '-NoProfile -Command "Get-Printer | ' +
+    'Format-Table -AutoSize Name,DriverName,PortName,PrinterStatus | ' +
+    'Out-File -FilePath ''' + OutFile + ''' -Encoding utf8"';
+  Ok := Exec(PSPath, Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  EnvMemo.Lines.Clear;
+  if Ok and FileExists(OutFile) then
+  begin
+    EnvMemo.Lines.LoadFromFile(OutFile);
+    if EnvMemo.Lines.Count = 0 then
+      EnvMemo.Lines.Text := '未检测到打印机（本步骤仅检测环境，不安装任何驱动）。';
+  end
+  else
+    EnvMemo.Lines.Text :=
+      '未能通过 Get-Printer 读取队列（本步骤仅检测环境，不安装任何驱动；' +
+      '可在 Windows"设置 → 蓝牙和设备 → 打印机"中手动查看）。';
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
