@@ -177,12 +177,21 @@ $ QT_QPA_PLATFORM=offscreen timeout 25 ./dist/CodeLabelStudio.exe
 
 ## 8. GitHub 推送状态
 
-- 远端仓库：`github.com/alexzhang2024/CodeLabelStudio`（PAT 认证，REST API 推送）
+- 远端仓库：`github.com/alexandresilksail/LabelPrint`（分支 main）
 - 推送脚本：`scripts/push_via_api.py`（github.com 直连被阻断时经
   api.github.com 创建 blob/tree/commit 更新 ref；文件模式从
   `git ls-files -s` 读取真实 mode；内容从 git 对象库取提交态字节，
   保证逐字节一致）
-- 本轮状态：审计修复改动已就绪，提交与推送见发布记录。
+- 本轮状态：**本地提交 `2fb9ee8` 已完成（22 文件，+2209/-259），
+  推送被阻塞**——原 PAT 已失效（api.github.com 返回 401 Bad
+  credentials，fine-grained token 过期或被撤销）。
+- 恢复方式：使用方提供新的 fine-grained PAT（contents: write 权限）
+  后执行：
+  ```
+  set GITHUB_TOKEN=<新令牌>
+  python scripts/push_via_api.py
+  ```
+  本地领先远端的提交可直接推送，无需重建。
 
 ## 9. 验收判定
 
@@ -194,6 +203,9 @@ $ QT_QPA_PLATFORM=offscreen timeout 25 ./dist/CodeLabelStudio.exe
 | 便携版冒烟 | ✅ 通过 |
 | 安装器交互 | ⏳ 待人工验收（唯一未闭环项） |
 | 文档一致性 | ✅ 部署/运维/安全文档已同步更新 |
+| GitHub 推送 | ⏳ 阻塞：原 PAT 失效（401），待新令牌 |
 
-**结论：达到交付标准，可发布。** 唯一未闭环项为安装器人工交互验收，
+**结论：代码与文档达到交付标准；推送需使用方提供新的 GitHub
+fine-grained PAT（contents: write）后执行 `scripts/push_via_api.py`，
+本地提交 `2fb9ee8` 已就绪。** 唯一未闭环项为安装器人工交互验收，
 不影响便携版使用；建议发布后由使用方在真实桌面环境补验。
