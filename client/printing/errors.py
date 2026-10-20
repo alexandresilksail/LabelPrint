@@ -36,6 +36,7 @@ class PrintError(Exception):
     # ---- 任务/数据 ----
     PAPER_UNSUPPORTED = "PAPER_UNSUPPORTED"             # 纸张规格不受支持
     PAPER_OUT_OF_RANGE = "PAPER_OUT_OF_RANGE"           # 超出可打印区域
+    PAPER_SIZE_MISMATCH = "PAPER_SIZE_MISMATCH"         # PDF 页面尺寸与纸张规格不一致
     SCALE_MISMATCH = "SCALE_MISMATCH"                   # 检测到非预期缩放
     QUIET_ZONE_TOO_SMALL = "QUIET_ZONE_TOO_SMALL"       # 条码静区不足
     MODULE_WIDTH_OUT_OF_RANGE = "MODULE_WIDTH_OUT_OF_RANGE"  # 模块宽度越界
@@ -44,6 +45,7 @@ class PrintError(Exception):
     JOB_NOT_FOUND = "JOB_NOT_FOUND"
     INVALID_JOB = "INVALID_JOB"                         # 任务参数非法
     PROTOCOL_UNSUPPORTED = "PROTOCOL_UNSUPPORTED"       # 设备不支持该协议
+    TRANSPORT_NOT_IMPLEMENTED = "TRANSPORT_NOT_IMPLEMENTED"  # 传输通道未集成（USB/蓝牙/LPR 等）
 
     CODES = {
         UNSUPPORTED_PLATFORM: "当前平台/后端不支持该操作",
@@ -59,6 +61,7 @@ class PrintError(Exception):
         ACCESS_DENIED: "没有足够权限执行该操作",
         PAPER_UNSUPPORTED: "所选纸张规格不受该打印机支持",
         PAPER_OUT_OF_RANGE: "标签尺寸超出打印机可打印区域",
+        PAPER_SIZE_MISMATCH: "PDF 页面尺寸与打印纸张规格不一致",
         SCALE_MISMATCH: "检测到非预期缩放，标签可能无法按 1:1 打印",
         QUIET_ZONE_TOO_SMALL: "条码静区不足，可能无法稳定识读",
         MODULE_WIDTH_OUT_OF_RANGE: "条码模块宽度超出可识读范围",
@@ -67,6 +70,7 @@ class PrintError(Exception):
         JOB_NOT_FOUND: "找不到该打印任务",
         INVALID_JOB: "打印任务参数非法",
         PROTOCOL_UNSUPPORTED: "该设备不支持所选打印协议",
+        TRANSPORT_NOT_IMPLEMENTED: "该传输通道尚未集成（如 USB/蓝牙/LPR 直连）",
     }
 
     def __init__(self, code: str, user_message: str | None = None,

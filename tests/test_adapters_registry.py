@@ -8,7 +8,7 @@ import pytest
 
 from client.printing.adapters.cpcl import CPCLAdapter
 from client.printing.adapters.registry import (
-    build_adapter, protocol_supported, verified,
+    build_adapter, protocol_selection_basis, protocol_supported, verified,
 )
 from client.printing.adapters.tspl import TSPLAdapter
 from client.printing.adapters.universal import (
@@ -65,6 +65,33 @@ def test_unknown_protocol_unsupported():
 ])
 def test_protocol_supported(protocol, expected):
     assert protocol_supported(protocol) is expected
+
+
+# ---------------------------------------------------------------------------
+# 协议选择依据：严禁按品牌名/驱动名推断（纯函数）
+# ---------------------------------------------------------------------------
+
+def test_protocol_selection_basis_does_not_infer_from_brand():
+    from client.printing.capabilities import DriverInfo
+    zebra = make_caps(protocol=Protocol.ZPL)
+    zebra.driver = DriverInfo(driver_name="Zebra ZPL Printer")
+    mystery = make_caps(protocol=Protocol.ZPL)
+    mystery.driver = DriverInfo(driver_name="Generic Text Only")
+    # 驱动名/品牌不同，但声明协议相同 → 依据描述必须一致（不读品牌做断言）
+    assert protocol_selection_basis(zebra) == protocol_selection_basis(mystery)
+    assert "未按厂商名/驱动名推断" in protocol_selection_basis(zebra)
+
+
+def test_protocol_selection_basis_reports_unverified():
+    caps = make_caps(protocol=Protocol.ZPL, verified_with_hardware=False)
+    basis = protocol_selection_basis(caps)
+    assert "zpl" in basis
+    assert "未经真实设备实测" in basis
+
+
+def test_protocol_selection_basis_reports_verified():
+    caps = make_caps(protocol=Protocol.TSPL, verified_with_hardware=True)
+    assert "已经真实设备实测" in protocol_selection_basis(caps)
 
 
 # ---------------------------------------------------------------------------

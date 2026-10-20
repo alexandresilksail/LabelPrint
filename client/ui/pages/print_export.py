@@ -14,8 +14,9 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton, QScrollArea,
-    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
+    QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from ..widgets import (
@@ -24,8 +25,8 @@ from ..widgets import (
 from ...barcode.encoder import encode_with_quiet_zone
 from ...printing.adapters.registry import build_adapter
 from ...printing.calibration import (
-    apply_offset, check_label_geometry, check_module_width, check_quiet_zone,
-    render_test_page_pdf, verify_scale,
+    DEFAULT_QUIET_MODULES, apply_offset, check_label_geometry,
+    check_module_width, check_quiet_zone, render_test_page_pdf, verify_scale,
 )
 from ...printing.config_store import (
     PrinterConfigStore, PrinterPrintConfig,
@@ -36,7 +37,9 @@ from ...printing.driver_installer import (
 )
 from ...printing.errors import PrintError
 from ...printing.job import ValidationIssue
+from ...printing.pdf import render_label_sheet_pdf
 from ...printing.preview import compute_layout, fit_barcode
+from ...printing.print_session import PrintJobSession
 from . import print_export_logic as L
 
 STATUS_LABELS = {
@@ -141,8 +144,8 @@ class DriverGuidanceDialog(QDialog):
             return
         text = {
             ElevationResult.LAUNCHED:
-                "已通过 UAC 发起启动（仅代表安装程序被拉起，不代表安装成功，"
-                "请按安装向导完成并在完成后回到本程序重新检测）。",
+                "驱动安装程序已启动；启动成功不等于安装成功。请在安装完成后"
+                "返回点击『刷新打印机』重新枚举，并核对队列与驱动状态。",
             ElevationResult.REQUIRES_UAC:
                 "需要管理员/UAC 授权但未获得，请在弹出的系统授权框中点“是”。",
             ElevationResult.CANCELLED_BY_USER:
@@ -151,6 +154,53 @@ class DriverGuidanceDialog(QDialog):
                 f"启动失败（系统错误码 {outcome.error_code}），请确认文件完整。",
         }[outcome.status]
         self.result_label.setText(text)
+
+
+# ---------------------------------------------------------------------------
+# 纸张不一致确认对话框：确认转换 / 改用模板纸张 / 中止（三选一，禁止静默处理）
+# ---------------------------------------------------------------------------
+class PaperConversionDialog(QDialog):
+    """模板纸张与所选纸张不一致时的明确确认。
+
+    返回选择：``use_selected``（按所选纸张重新排版，允许转换）、
+    ``use_template``（改用模板纸张）、``abort``（中止打印）。
+    """
+
+    def __init__(self, parent=None, message: str = ""):
+        super().__init__(parent)
+        self._choice = "abort"
+        self.setWindowTitle("纸张不一致，请确认")
+        self.setMinimumWidth(500)
+        v = QVBoxLayout(self)
+        lbl = QLabel(message)
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        row = QHBoxLayout()
+        b_confirm = QPushButton("确认按所选纸张重新排版")
+        b_confirm.clicked.connect(self._choose_selected)
+        b_template = QPushButton("改用模板纸张")
+        b_template.clicked.connect(self._choose_template)
+        b_abort = QPushButton("取消（中止打印）")
+        b_abort.clicked.connect(self.reject)
+        row.addWidget(b_confirm)
+        row.addWidget(b_template)
+        row.addStretch(1)
+        row.addWidget(b_abort)
+        v.addLayout(row)
+
+    def _choose_selected(self):
+        self._choice = "use_selected"
+        self.accept()
+
+    def _choose_template(self):
+        self._choice = "use_template"
+        self.accept()
+
+    @classmethod
+    def ask(cls, parent, message: str) -> str:
+        dlg = cls(parent, message)
+        dlg.exec()
+        return dlg._choice
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +275,11 @@ class CalibrationDialog(QDialog):
         form.addRow("模块宽度:", self.module)
         layout.addLayout(form)
 
+        # 设备能力如实提示（不夸大、不伪造实测）
+        self.cap_hint = MutedLabel("")
+        layout.addWidget(self.cap_hint)
+        self._refresh_cap_hints()
+
         # 回填已保存配置
         if self.existing is not None:
             self.offset_x.setValue(self.existing.offset_x_mm)
@@ -256,6 +311,14 @@ class CalibrationDialog(QDialog):
         row.addStretch(1)
         row.addWidget(btn_close)
         layout.addLayout(row)
+
+    # ---------------- 能力如实提示 ----------------
+    def _refresh_cap_hints(self):
+        hints = L.capability_hints(self.caps)
+        # 间隙控件旁的专项提示
+        if self.caps is not None and not self.caps.supports_gap_sensor:
+            hints.insert(0, "该设备不支持间隙传感，间隙仅用于专用协议打印/不生效")
+        self.cap_hint.setText("\n".join(f"· {h}" for h in hints))
 
     # ---------------- 测试页 ----------------
     def _render_test_page(self):
@@ -414,9 +477,15 @@ class PrintPage(QWidget):
         self.templates = []
         self._printers = []
         self._current_caps = None
-        self._adapter = None
-        self._job_id = None
+        # 任务会话：并发锁 / 任务句柄 / 临时文件生命周期（替换单例 _job_id）
+        self._session = PrintJobSession(keep_recent=2)
+        self._submitting = False
         self._config_store = PrinterConfigStore(ctx.data_dir / "printer_configs")
+
+        # 应用退出时一次性清理全部临时文件与任务句柄
+        app = self._qapp()
+        if app is not None:
+            app.aboutToQuit.connect(self._session.cleanup_all)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
@@ -477,6 +546,18 @@ class PrintPage(QWidget):
         self.reload_templates()
         self.refresh_printers()
 
+    @staticmethod
+    def _qapp():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance()
+
+    def closeEvent(self, event):
+        """页面关闭：清理全部临时文件与任务句柄（幂等）。"""
+        try:
+            self._session.cleanup_all()
+        finally:
+            super().closeEvent(event)
+
     # ================== 打印机与打印区块 ==================
     def _build_print_section(self, body):
         divider = QFrame()
@@ -503,6 +584,39 @@ class PrintPage(QWidget):
         self.btn_driver_guidance = QPushButton("驱动安装指引")
         self.btn_driver_guidance.clicked.connect(self.open_driver_guidance)
         body.addWidget(self.btn_driver_guidance)
+
+        # ---- 打印方式（协议只能由用户显式选择，禁止按品牌推断）----
+        body.addWidget(QLabel("打印方式:"))
+        self.mode_combo = QComboBox()
+        for key, label in L.MODE_LABELS.items():
+            self.mode_combo.addItem(label, key)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        body.addWidget(self.mode_combo)
+
+        # 网络 TCP 9100 直连子行：协议 + 地址（默认隐藏）
+        self.tcp_row = QWidget()
+        tcp_lay = QHBoxLayout(self.tcp_row)
+        tcp_lay.setContentsMargins(0, 0, 0, 0)
+        self.tcp_proto_combo = QComboBox()
+        self.tcp_proto_combo.addItem("ZPL", "zpl")
+        self.tcp_proto_combo.addItem("TSPL", "tspl")
+        self.tcp_proto_combo.addItem("CPCL", "cpcl")
+        self.tcp_proto_combo.currentIndexChanged.connect(
+            self._refresh_mode_basis)
+        self.tcp_host_edit = QLineEdit()
+        self.tcp_host_edit.setPlaceholderText("IP:端口，如 192.168.1.20:9100")
+        tcp_lay.addWidget(QLabel("协议:"))
+        tcp_lay.addWidget(self.tcp_proto_combo)
+        tcp_lay.addWidget(self.tcp_host_edit, 1)
+        self.tcp_row.setVisible(False)
+        body.addWidget(self.tcp_row)
+
+        self.transport_label = MutedLabel("")
+        body.addWidget(self.transport_label)
+        self.mode_basis_label = MutedLabel("")
+        body.addWidget(self.mode_basis_label)
+        self.cap_hint_label = MutedLabel("")
+        body.addWidget(self.cap_hint_label)
 
         # 参数
         form = QFormLayout()
@@ -542,21 +656,35 @@ class PrintPage(QWidget):
         self.btn_print.clicked.connect(lambda: self._prepare_job(True))
         self.btn_cancel = QPushButton("取消任务")
         self.btn_cancel.clicked.connect(self.cancel_current_job)
+        self.btn_query = QPushButton("查询任务状态")
+        self.btn_query.clicked.connect(self.query_current_job)
         self.btn_calibrate = QPushButton("校准与设置")
         self.btn_calibrate.clicked.connect(self.open_calibration)
         for b in (self.btn_preview, self.btn_print, self.btn_cancel,
-                  self.btn_calibrate, self.btn_driver_guidance):
+                  self.btn_query, self.btn_calibrate,
+                  self.btn_driver_guidance):
             body.addWidget(b)
 
         self._set_print_controls_enabled(False)
 
     def _set_print_controls_enabled(self, enabled: bool):
         for b in (self.btn_preview, self.btn_print, self.btn_cancel,
-                  self.btn_calibrate, self.btn_driver_guidance,
+                  self.btn_query, self.btn_calibrate,
+                  self.btn_driver_guidance,
                   self.paper_combo, self.orientation_combo,
                   self.copies_spin, self.quality_combo,
-                  self.offset_x_spin, self.offset_y_spin):
+                  self.offset_x_spin, self.offset_y_spin,
+                  self.mode_combo):
             b.setEnabled(enabled)
+        # 提交期间仅禁用打印/预览/取消/查询，避免重复点击；其余保持
+        if self._submitting:
+            self.btn_print.setEnabled(False)
+            self.btn_preview.setEnabled(False)
+
+    def _on_mode_changed(self):
+        mode = self.mode_combo.currentData()
+        self.tcp_row.setVisible(mode == L.MODE_TCP9100)
+        self._refresh_mode_basis()
 
     # ---------------- 枚举 ----------------
     def refresh_printers(self):
@@ -629,8 +757,36 @@ class PrintPage(QWidget):
         )
         self.driver_state_label.setText(install_guidance_for_state(state))
 
+        # 通道诚信提示：USB/蓝牙/LPR 未集成（不支持）并禁用专用协议选项
+        channel_ok, channel_text = L.transport_honesty(caps)
+        self.transport_label.setText("连接通道：" + channel_text)
+        for i in range(self.mode_combo.count()):
+            key = self.mode_combo.itemData(i)
+            if key in L.PROTOCOL_MODES or key == L.MODE_TCP9100:
+                self.mode_combo.model().item(i).setEnabled(channel_ok)
+        if not channel_ok and self.mode_combo.currentData() != L.MODE_UNIVERSAL:
+            self.mode_combo.setCurrentIndex(
+                self.mode_combo.findData(L.MODE_UNIVERSAL))
+
+        # 能力如实提示（间隙传感 / 1:1 / 未实测）
+        hints = L.capability_hints(caps)
+        if not caps.supports_gap_sensor:
+            hints.insert(0, "该设备不支持间隙传感，间隙仅用于专用协议打印/不生效")
+        self.cap_hint_label.setText("\n".join(f"· {h}" for h in hints))
+        self._refresh_mode_basis()
+
         self._populate_papers()
         self._load_printer_config(caps.printer_name)
+
+    def _refresh_mode_basis(self):
+        """打印方式选择依据：只来自显式选择/能力声明，不做品牌推断。"""
+        mode = self.mode_combo.currentData() if hasattr(
+            self, "mode_combo") else L.MODE_UNIVERSAL
+        sub = self.tcp_proto_combo.currentData() if hasattr(
+            self, "tcp_proto_combo") else None
+        self.mode_basis_label.setText(
+            L.mode_basis_text(self._current_caps, mode or L.MODE_UNIVERSAL,
+                              sub))
 
     def _populate_papers(self):
         caps = self._current_caps
@@ -671,6 +827,7 @@ class PrintPage(QWidget):
     def _collect_form(self, template) -> dict:
         caps = self._current_caps
         cfg = self._config_store.load(caps.printer_name) if caps else None
+        mode = self.mode_combo.currentData() or L.MODE_UNIVERSAL
         return {
             "paper": self.paper_combo.currentData(),
             "orientation": self.orientation_combo.currentData(),
@@ -682,9 +839,18 @@ class PrintPage(QWidget):
             "label_gap_mm": cfg.label_gap_mm if cfg else 0.0,
             "quiet_zone_mm": cfg.quiet_zone_mm if cfg else None,
             "module_mm": cfg.module_mm if cfg else None,
+            "mode": mode,
+            "sub_protocol": self.tcp_proto_combo.currentData(),
+            "host_port": self.tcp_host_edit.text().strip(),
         }
 
     # ---------------- 打印准备 / 预览 / 提交 ----------------
+    def _template_paper(self, t):
+        from ...printing.capabilities import PaperSize
+        name = getattr(t, "template_name", None) or "模板纸张"
+        return PaperSize(name=name, width_mm=float(t.paper_width),
+                         height_mm=float(t.paper_height))
+
     def _prepare_job(self, submit_after: bool):
         items = self.selected_items()
         if not items:
@@ -701,75 +867,178 @@ class PrintPage(QWidget):
             return
 
         form = self._collect_form(t)
-        job = L.build_job_from_form(t, caps, form)
+        mode = form["mode"]
+        # 仅专用协议路径构建 label_content（items 未展开）；通用队列走 PDF
+        build_items = items if mode != L.MODE_UNIVERSAL else None
+        job = L.build_job_from_form(
+            t, caps, form, items=build_items, template=t)
         # 应用校准偏移（返回副本，不改写原规格）
         job = apply_offset(job, job.offset_x_mm, job.offset_y_mm)
 
-        def _do():
-            adapter = build_adapter(caps)
-            expanded = [it for it in items for _ in range(t.copies)]
-            fd, pdf_path = tempfile.mkstemp(
-                suffix=".pdf", prefix="label_print_")
-            os.close(fd)
-            meta = render_label_sheet_pdf(expanded, t, pdf_path)
-            job.pdf_path = pdf_path
-            issues = adapter.validate_job(job)
-            errors, warnings = L.group_issues(issues)
+        # ---- 纸张一致性：不一致必须先明确确认，禁止静默裁切/缩放 ----
+        tpl_paper = self._template_paper(t)
+        plan = L.resolve_paper_choice(tpl_paper, job.paper, None)
+        if plan["state"] == L.PAPER_NEEDS_CONFIRM:
+            choice = PaperConversionDialog.ask(
+                self, L.paper_conversion_prompt(tpl_paper, job.paper))
+            plan = L.resolve_paper_choice(tpl_paper, job.paper, choice)
+            if plan["state"] == L.PAPER_ABORT:
+                return
+            job.paper = plan["paper"]
+            job.allow_paper_conversion = plan["allow_paper_conversion"]
+
+        printer = caps.printer_name
+
+        # ---- 并发锁：仅提交路径 begin_submit；忙则禁用并提示 ----
+        if submit_after:
             try:
-                scale = verify_scale(pdf_path, job.paper,
-                                     job.scale_tolerance_mm)
-                if scale is not None and not scale.ok:
-                    for wmsg in scale.warnings:
-                        warnings.append(
-                            ValidationIssue.warning("SCALE_MISMATCH", wmsg))
-            except PrintError:
-                pass
+                self._session.begin_submit(printer)
+            except PrintError as exc:
+                warn(self, "已有任务处理中", exc.user_message)
+                # 忙锁由在途任务持有；先禁用打印按钮，待其完成后由其恢复
+                self._set_submitting_ui(True)
+                return
+            self._set_submitting_ui(True)
+
+        # 派生提交用能力（协议/通道只来自用户显式选择，不按品牌推断）
+        try:
+            eff_caps = L.effective_capabilities(
+                caps, mode, sub_protocol=form["sub_protocol"],
+                host_port=form["host_port"])
+        except PrintError as exc:
+            if submit_after:
+                self._release_lock(printer)
+            self._set_submitting_ui(False)
+            error(self, "打印方式不可用", exc.user_message)
+            return
+
+        def _do():
+            adapter = build_adapter(eff_caps)
+            meta = None
+            if mode == L.MODE_UNIVERSAL:
+                fd, pdf_path = tempfile.mkstemp(
+                    suffix=".pdf", prefix="label_print_")
+                os.close(fd)
+                try:
+                    # items 为未展开原始编码；模板份数由渲染器唯一展开
+                    meta = render_label_sheet_pdf(
+                        items, t, pdf_path,
+                        quiet=DEFAULT_QUIET_MODULES,
+                        offset_x_mm=job.offset_x_mm,
+                        offset_y_mm=job.offset_y_mm,
+                        target_module_mm=job.module_mm,
+                        paper_override=job.paper,
+                        orientation_override=job.orientation,
+                    )
+                except ValueError as exc:
+                    # 网格超出所选纸张：明确拒绝，不提交（含所选纸张/网格尺寸）
+                    raise PrintError(
+                        PrintError.PAPER_OUT_OF_RANGE,
+                        f"所选纸张无法容纳标签网格：{exc}",
+                        resolution="请更换纸张、改用模板纸张，或减小行列数/标签尺寸",
+                    ) from exc
+                self._session.register_temp(pdf_path)
+                job.pdf_path = pdf_path
+
+            issues = adapter.validate_job(job)
+            # 专用协议：提交前预构建 payload，把协议不支持的条码类型等
+            # 错误以 error 级 issue 展示并中止（不真正发送）
+            if mode != L.MODE_UNIVERSAL:
+                try:
+                    adapter.build_payload(job)
+                except PrintError as exc:
+                    issues.append(ValidationIssue.error(
+                        exc.code, exc.user_message))
+            errors, warnings = L.group_issues(issues)
+            # 通用路径缩放预检（warning 不阻止提交）
+            if job.pdf_path:
+                try:
+                    scale = verify_scale(job.pdf_path, job.paper,
+                                         job.scale_tolerance_mm)
+                    if scale is not None and not scale.ok:
+                        for wmsg in scale.warnings:
+                            warnings.append(
+                                ValidationIssue.warning("SCALE_MISMATCH", wmsg))
+                except PrintError:
+                    pass
             return {
                 "adapter": adapter, "job": job, "errors": errors,
                 "warnings": warnings, "meta": meta,
-                "submit_after": submit_after,
+                "submit_after": submit_after, "printer": printer,
+                "mode": mode,
             }
 
         RunLater(self).run(
             _do, on_done=self._on_prepared,
-            on_error=lambda m: error(self, "打印失败", m))
+            on_error=lambda m: self._on_prepare_error(
+                printer, submit_after, m))
+
+    def _on_prepare_error(self, printer, submit_after, message):
+        if submit_after:
+            self._release_lock(printer)
+        self._set_submitting_ui(False)
+        error(self, "打印失败", message)
+
+    def _set_submitting_ui(self, busy: bool):
+        self._submitting = busy
+        self.btn_print.setEnabled(not busy)
+        self.btn_preview.setEnabled(not busy)
+
+    def _release_lock(self, printer: str):
+        self._session.end_submit(printer)
 
     def _on_prepared(self, payload: dict):
         errors = payload["errors"]
         warnings = payload["warnings"]
         job = payload["job"]
+        printer = payload["printer"]
 
         if errors:
-            msg = "打印校验未通过，已中止提交：\n" + \
-                  "\n".join(f"· [{e.code}] {e.message}" for e in errors)
+            lines = []
+            for e in errors:
+                line = f"· [{e.code}] {e.message}"
+                if getattr(e, "resolution", ""):
+                    line += f"（{e.resolution}）"
+                lines.append(line)
+            msg = "打印校验未通过，已中止提交：\n" + "\n".join(lines)
             if warnings:
                 msg += "\n\n警告（不阻止提交，供参考）：\n" + \
                        "\n".join(f"· {w.message}" for w in warnings)
+            if payload["submit_after"]:
+                self._release_lock(printer)
+            self._set_submitting_ui(False)
+            self._session.cleanup()
             error(self, "打印校验未通过", msg)
             return
 
-        # 打印前预览：rasterize_preview 渲染 PNG 展示，verify_scale 缩放警告
+        # 打印前预览：rasterize_preview 渲染 PNG 展示（专用协议无 PDF 预览）
         paths = []
-        try:
-            from ...printing.pdf_render import rasterize_preview
-            paths = rasterize_preview(job.pdf_path, dpi=150, max_pages=1)
-        except PrintError as exc:
-            warn(self, "预览不可用", exc.user_message)
+        if job.pdf_path:
+            try:
+                from ...printing.pdf_render import rasterize_preview
+                paths = rasterize_preview(job.pdf_path, dpi=150, max_pages=1)
+            except PrintError as exc:
+                warn(self, "预览不可用", exc.user_message)
 
-        self._show_preview_dialog(paths, warnings, job)
+        self._show_preview_dialog(paths, warnings, job,
+                                  mode=payload["mode"])
 
         if not payload["submit_after"]:
+            self._session.cleanup()
             return
 
         confirm_text = (
             f"任务：{job.describe()}\n\n"
-            "确认提交到打印队列？提交成功仅代表进入队列，"
+            "确认提交？提交成功仅代表进入队列/指令已发送，"
             "不代表物理打印完成，请查看打印机实际输出。")
         if not confirm(self, "确认提交打印", confirm_text):
+            self._release_lock(printer)
+            self._set_submitting_ui(False)
+            self._session.cleanup()
             return
-        self._submit_job(payload["adapter"], job)
+        self._submit_job(payload["adapter"], job, printer)
 
-    def _show_preview_dialog(self, paths, warnings, job):
+    def _show_preview_dialog(self, paths, warnings, job, mode=None):
         dlg = QDialog(self)
         dlg.setWindowTitle("打印预览")
         dlg.setMinimumSize(420, 520)
@@ -787,13 +1056,17 @@ class PrintPage(QWidget):
             lbl.setAlignment(Qt.AlignCenter)
             hv.addWidget(lbl)
         if not paths:
-            hv.addWidget(MutedLabel(
-                "当前环境无法渲染 PDF 预览（需 Windows + PySide6）"))
+            if mode and mode != L.MODE_UNIVERSAL:
+                hv.addWidget(MutedLabel(
+                    "专用协议直连无 PDF 预览；指令将按标签尺寸直接构建发送。"))
+            else:
+                hv.addWidget(MutedLabel(
+                    "当前环境无法渲染 PDF 预览（需 Windows + PySide6）"))
         warn_text = "\n".join(f"· {w.message}" for w in warnings)
         if warn_text:
             hv.addWidget(MutedLabel("警告：\n" + warn_text))
         hv.addWidget(MutedLabel(
-            f"任务：{job.describe()}；提交到队列不代表物理打印完成。"))
+            f"任务：{job.describe()}；提交到队列/指令已发送均不代表物理打印完成。"))
         scroll.setWidget(host)
         v.addWidget(scroll)
         close = QPushButton("关闭")
@@ -801,41 +1074,92 @@ class PrintPage(QWidget):
         v.addWidget(close)
         dlg.exec()
 
-    def _submit_job(self, adapter, job):
+    def _submit_job(self, adapter, job, printer):
         def _do():
             return adapter.submit(job)
 
         def _done(result):
-            self._adapter = adapter
-            self._job_id = result.job_id
-            # 只声明“已提交到队列”，不声称物理打印完成
-            info(self, "打印队列", result.message)
+            # 登记活跃任务句柄（按打印机隔离）；保留最近临时文件后清理
+            self._session.set_active(printer, adapter, result.job_id,
+                                     job.pdf_path)
+            self._session.cleanup()
+            self._release_lock(printer)
+            self._set_submitting_ui(False)
+            # 只声明“已提交到队列/指令已发送”，不声称物理打印完成
+            info(self, "打印提交", result.message)
+
+        def _fail(message):
+            self._release_lock(printer)
+            self._set_submitting_ui(False)
+            error(self, "打印失败", message)
 
         RunLater(self).run(
-            _do, on_done=_done,
-            on_error=lambda m: error(self, "打印失败", m))
+            _do, on_done=_done, on_error=_fail)
 
+    # ---------------- 取消 / 查询（经会话，按打印机隔离） ----------------
     def cancel_current_job(self):
-        if self._adapter is None or self._job_id is None:
-            warn(self, "无待取消任务",
-                 "当前没有已提交的任务编号，无法取消")
+        caps = self._current_caps
+        if caps is None:
+            warn(self, "无可用打印机", "请先选择打印机")
             return
-        job_id = self._job_id
+        printer = caps.printer_name
 
         def _do():
-            return self._adapter.cancel(job_id)
+            try:
+                self._session.cancel_active(printer)
+                return ("ok", None)
+            except PrintError as exc:
+                return ("err", exc)
 
-        def _done(ok):
-            if ok:
-                info(self, "任务取消", f"打印任务 #{job_id} 已取消")
-                self._job_id = None
-            else:
-                warn(self, "取消失败",
-                     f"找不到或无法取消任务 #{job_id}（可能已完成）")
+        def _done(pair):
+            kind, exc = pair
+            if kind == "ok":
+                info(self, "任务取消", "打印任务已取消")
+                return
+            self._classify_task_error(exc)
 
         RunLater(self).run(
             _do, on_done=_done,
             on_error=lambda m: error(self, "取消失败", m))
+
+    def query_current_job(self):
+        caps = self._current_caps
+        if caps is None:
+            warn(self, "无可用打印机", "请先选择打印机")
+            return
+        printer = caps.printer_name
+
+        def _do():
+            try:
+                state = self._session.query_active(printer)
+                return ("ok", state)
+            except PrintError as exc:
+                return ("err", exc)
+
+        def _done(pair):
+            kind, payload = pair
+            if kind == "ok":
+                finished = "（已完成）" if payload.is_finished else "（排队/进行中）"
+                info(self, "任务状态",
+                     f"任务 #{payload.job_id}：{payload.status_text}{finished}")
+                return
+            self._classify_task_error(payload)
+
+        RunLater(self).run(
+            _do, on_done=_done,
+            on_error=lambda m: error(self, "查询失败", m))
+
+    def _classify_task_error(self, exc: PrintError):
+        """按错误码分类展示取消/查询结果。"""
+        if exc.code == PrintError.JOB_NOT_FOUND:
+            warn(self, "无待处理任务",
+                 "当前没有已提交且仍在队列的任务（可能已完成或不存在）")
+        elif exc.code == PrintError.TRANSPORT_NOT_IMPLEMENTED:
+            warn(self, "通道不支持该操作", exc.user_message)
+        elif exc.code == PrintError.SPOOL_FAILED:
+            error(self, "队列操作失败", exc.user_message)
+        else:
+            error(self, "任务操作失败", exc.user_message)
 
     # ---------------- 对话框入口 ----------------
     def open_driver_guidance(self):
@@ -959,9 +1283,8 @@ class PrintPage(QWidget):
             return
 
         def _do():
-            from ...printing.pdf import render_label_sheet_pdf
-            expanded = [it for it in items for _ in range(t.copies)]
-            return render_label_sheet_pdf(expanded, t, path)
+            # items 为未展开原始编码；模板份数由渲染器唯一展开
+            return render_label_sheet_pdf(items, t, path)
 
         def _done(meta):
             info(self, "导出完成",

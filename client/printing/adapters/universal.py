@@ -12,7 +12,14 @@
   tolerance_mm) -> ScaleReport``：PDF 尺寸/缩放预检。
 
 统一校验机制与 :mod:`client.printing.adapters._common` 登记规则一致；
-PDF 缩放偏差只产生 ``SCALE_MISMATCH`` **warning**（不阻止提交，UI 警告）。
+PDF 预检 ``ScaleReport.ok=False`` 按偏差形态分级：
+
+- **整体纸张尺寸不一致**（两轴均超出容差）且 ``allow_paper_conversion=False``
+  → ``PAPER_SIZE_MISMATCH`` **error**（阻止提交，禁止静默缩放）；
+  ``allow_paper_conversion=True`` → 降级为 ``PAPER_SIZE_MISMATCH`` **warning**
+  并注明"已按用户确认转换"。
+- **单轴/局部偏差** → 保持 ``SCALE_MISMATCH`` **warning** 语义（不阻止提交）。
+
 通用队列路径提交成功只能声明 QUEUED，不得声称物理打印成功。
 """
 
@@ -21,7 +28,7 @@ from __future__ import annotations
 from ..capabilities import PrinterCapabilities
 from ..errors import PrintError
 from ..job import (
-    JobState, LabelJobSpec, PrintResult, ValidationIssue,
+    JobState, LabelJobSpec, PrintResult, ScaleReport, ValidationIssue,
 )
 from ._common import collect_common_issues, has_error
 from .base import BasePrinterAdapter
@@ -45,6 +52,51 @@ def _choose_backend(job: LabelJobSpec) -> str:
     )
 
 
+def _classify_scale_report(
+    report: ScaleReport, job: LabelJobSpec
+) -> list[ValidationIssue]:
+    """把 ``ok=False`` 的预检报告分级（纯逻辑分支，不触碰硬件）。
+
+    - 两轴偏差均超出容差 → 整体纸张尺寸不一致：
+      ``allow_paper_conversion=False`` → ``PAPER_SIZE_MISMATCH`` error 阻止提交；
+      ``True`` → 降级为 ``PAPER_SIZE_MISMATCH`` warning，注明已按用户确认转换。
+    - 仅单轴/局部偏差 → 保持 ``SCALE_MISMATCH`` warning 语义（不阻止提交）。
+    """
+    tol = report.tolerance_mm or job.scale_tolerance_mm
+    size_mismatch = (abs(report.deviation_x_mm) > tol
+                     and abs(report.deviation_y_mm) > tol)
+    detail = (
+        f"PDF 首页实测 {report.actual_width_mm:.2f}×"
+        f"{report.actual_height_mm:.2f}mm，所选纸张 "
+        f"{report.expected_width_mm:.2f}×{report.expected_height_mm:.2f}mm，"
+        f"偏差 ({report.deviation_x_mm:+.2f},"
+        f"{report.deviation_y_mm:+.2f})mm"
+    )
+    if size_mismatch:
+        if job.allow_paper_conversion:
+            note = "已按用户确认转换：按 PDF 实际尺寸 1:1 输出"
+            extra = ("；" + "；".join(report.warnings)
+                     if report.warnings else "")
+            return [ValidationIssue.warning(
+                PrintError.PAPER_SIZE_MISMATCH,
+                f"{detail}；{note}{extra}。",
+            )]
+        return [ValidationIssue.error(
+            PrintError.PAPER_SIZE_MISMATCH,
+            f"{detail}，尺寸不一致且未允许纸张转换，禁止静默缩放；"
+            "请核对 PDF 尺寸与所选纸张，或在打印确认中允许按 PDF 实际尺寸转换。",
+        )]
+
+    # 局部/单轴偏差：SCALE_MISMATCH warning（容差附近的微小偏差不阻止提交）
+    return [ValidationIssue.warning(
+        PrintError.SCALE_MISMATCH,
+        "检测到非预期缩放，标签可能无法按 1:1 打印："
+        + ("；".join(report.warnings)
+           or f"尺寸偏差 ({report.deviation_x_mm:+.2f},"
+              f"{report.deviation_y_mm:+.2f})mm"),
+    )]
+
+
 class UniversalWindowsAdapter(BasePrinterAdapter):
     """通用 Windows 队列适配器。未实测。"""
 
@@ -56,11 +108,12 @@ class UniversalWindowsAdapter(BasePrinterAdapter):
         super().__init__(capabilities)
         self._scale_checker = scale_checker
 
-    # ---- 校验（统一机制 + PDF 缩放 warning） ----
+    # ---- 校验（统一机制 + PDF 尺寸/缩放分级） ----
     def validate_job(self, job: LabelJobSpec) -> list[ValidationIssue]:
         issues = collect_common_issues(job, self._capabilities)
 
-        # PDF 缩放预检：偏差超容差 → SCALE_MISMATCH warning（不阻止提交）
+        # PDF 预检：ok=False 按偏差形态分级（整体尺寸不一致 error /
+        # 局部偏差 SCALE_MISMATCH warning）；PDF 未落盘（FileNotFoundError）跳过
         if job.pdf_path:
             checker = self._scale_checker
             if checker is None:
@@ -78,16 +131,7 @@ class UniversalWindowsAdapter(BasePrinterAdapter):
                     # 干跑/预览阶段 PDF 尚未落盘：跳过缩放检查，不阻断提交
                     report = None
                 if report is not None and not report.ok:
-                    issues.append(
-                        ValidationIssue.warning(
-                            PrintError.SCALE_MISMATCH,
-                            "检测到非预期缩放，标签可能无法按 1:1 打印："
-                            + "；".join(report.warnings)
-                            or f"尺寸偏差 "
-                               f"({report.deviation_x_mm:+.2f},"
-                               f"{report.deviation_y_mm:+.2f})mm",
-                        )
-                    )
+                    issues.extend(_classify_scale_report(report, job))
         return issues
 
     # ---- 构建：通用路径不产生 raw payload ----

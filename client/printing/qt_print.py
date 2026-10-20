@@ -20,7 +20,9 @@ from __future__ import annotations
 import os
 import sys
 
+from . import units
 from .capabilities import (
+    PaperSize,
     PrinterCapabilities,
     Protocol,
     Transport,
@@ -34,7 +36,6 @@ try:  # pragma: no cover - 仅在安装 PySide6 的环境命中
     from PySide6.QtPdf import QPdfDocument
     from PySide6.QtGui import (
         QImage,
-        QMarginsF,
         QPageLayout,
         QPageSize,
         QPainter,
@@ -42,6 +43,11 @@ try:  # pragma: no cover - 仅在安装 PySide6 的环境命中
         QSize,
         QSizeF,
     )
+    # QMarginsF 在 Qt6 位于 QtCore，部分版本仍在 QtGui，两处兜底
+    try:
+        from PySide6.QtGui import QMarginsF
+    except ImportError:  # pragma: no cover - 版本差异分支
+        from PySide6.QtCore import QMarginsF
     _QT_AVAILABLE = True
 except ImportError:
     QPrinter = None  # type: ignore[assignment,misc]
@@ -75,6 +81,58 @@ def _quality_to_qt(quality: PrintQuality):
     if quality == PrintQuality.HIGH:
         return QPrinter.High
     return QPrinter.Normal
+
+
+def resolve_effective_page(
+    pdf_w_mm: float,
+    pdf_h_mm: float,
+    spec: LabelJobSpec,
+) -> tuple[PaperSize | None, str | None, PrintError | None]:
+    """纯函数（无 Qt 依赖）：按 PDF 实测首页尺寸决定"有效页面"。
+
+    三态返回 ``(effective_page, note, error)``：
+
+    1. 实测尺寸与 ``spec.paper`` 在 ``spec.scale_tolerance_mm`` 容差内一致
+       （含旋转后宽高互换）→ ``(spec.paper, None, None)``；
+    2. 不一致且 ``allow_paper_conversion=False`` →
+       ``(None, None, PrintError(PAPER_SIZE_MISMATCH))``，**禁止静默缩放**；
+    3. 不一致且 ``allow_paper_conversion=True`` → 以 PDF 实测尺寸为有效页面，
+       返回 ``(实测 PaperSize, 说明文案, None)``，注明已按用户确认转换。
+
+    本函数只做尺寸比对，不打开文件、不触碰 Qt。
+    """
+    paper = spec.paper
+    if paper is None or not paper.is_valid:
+        return None, None, PrintError(
+            PrintError.INVALID_JOB,
+            resolution="任务规格缺少有效的纸张/标签尺寸（mm）。",
+        )
+
+    tol = spec.scale_tolerance_mm
+    exact = (units.size_close(pdf_w_mm, paper.width_mm, tol)
+             and units.size_close(pdf_h_mm, paper.height_mm, tol))
+    swapped = (units.size_close(pdf_w_mm, paper.height_mm, tol)
+               and units.size_close(pdf_h_mm, paper.width_mm, tol))
+    if exact or swapped:
+        return paper, None, None
+
+    if spec.allow_paper_conversion:
+        effective = PaperSize("pdf-page", pdf_w_mm, pdf_h_mm)
+        note = (
+            f"按 PDF 实际尺寸 {pdf_w_mm:.2f}×{pdf_h_mm:.2f}mm 1:1 输出"
+            "（与所选纸张不一致，已按用户确认转换）"
+        )
+        return effective, note, None
+
+    error = PrintError(
+        PrintError.PAPER_SIZE_MISMATCH,
+        f"PDF 页面尺寸 {pdf_w_mm:.2f}×{pdf_h_mm:.2f}mm 与所选纸张 "
+        f"{paper.width_mm:.2f}×{paper.height_mm:.2f}mm 不一致"
+        f"（容差 {tol}mm），未允许纸张转换，禁止静默拉伸/压缩。",
+        resolution="请核对 PDF 标签尺寸与所选纸张是否一致；"
+                   "或在打印确认中明确允许按 PDF 实际尺寸转换。",
+    )
+    return None, None, error
 
 
 def list_qt_printers() -> list[PrinterCapabilities]:
@@ -111,10 +169,19 @@ def print_pdf_via_qt(printer_name: str, pdf_path: str,
                      spec: LabelJobSpec) -> PrintResult:
     """把 PDF 通过 QPrinter 提交到系统队列（精确毫米、1:1、无自动缩放）。
 
-    流程：setPrinterName -> QPageLayout + QPageSize.ExactMatch 建精确毫米页 ->
-    setResolution(spec.dpi 或原生 DPI) -> 份数/方向/质量映射 -> QPdfDocument
-    逐页渲染 QImage -> 按精确 mm 矩形绘制。painter 启动失败或 printer.state()
-    为 Aborted/Error 时返回 ``PrintResult.failed``；成功只返回 queued。
+    流程：setPrinterName -> ``QPdfDocument.pagePointSize`` 逐页实测（pt→mm 用
+    ``units.pt_to_mm``）-> :func:`resolve_effective_page` 冻结有效页面（不一致
+    且未许可转换直接 ``PAPER_SIZE_MISMATCH`` 失败，**禁止静默拉伸/压缩**）->
+    单个 ``setPageLayout`` 原子设置精确毫米页 + 方向（不再分调 setPageSize /
+    setOrientation，避免 ExactMatch 下二次换向）-> setResolution(spec.dpi 或
+    原生 DPI) -> 份数/质量映射 -> QPdfDocument 逐页渲染 QImage -> 按
+    ``units.mm_to_dots`` 换算的精确设备点矩形绘制。painter 启动失败或
+    printer.state() 为 Aborted/Error 时返回 ``PrintResult.failed``；成功只返回
+    queued。
+
+    份数规则（唯一应用点）：``printer.setCopyCount(max(1, spec.copies))`` 是
+    任务份数的唯一应用位置；PDF 内容本身不含任务份数，渲染/绘制环节不得
+    重复放大或复制页面。
 
     Windows 上 QPrinter 走系统驱动与队列，ExactMatch 确保无自动缩放。
     """
@@ -148,6 +215,37 @@ def print_pdf_via_qt(printer_name: str, pdf_path: str,
             ),
         )
 
+    # ---- 尺寸冻结：先实测首页并逐页比对，不一致未许可即失败，不进入渲染 ----
+    def _page_mm(index: int) -> tuple[float, float]:
+        size_pt = doc.pagePointSize(index)
+        return (units.pt_to_mm(size_pt.width()),
+                units.pt_to_mm(size_pt.height()))
+
+    first_w_mm, first_h_mm = _page_mm(0)
+    effective_page, note, size_error = resolve_effective_page(
+        first_w_mm, first_h_mm, spec)
+    if size_error is not None:
+        doc.close()
+        return PrintResult.failed(printer_name, size_error)
+
+    tol = spec.scale_tolerance_mm
+    for page_index in range(1, doc.pageCount()):
+        w_mm, h_mm = _page_mm(page_index)
+        if not (units.size_close(w_mm, first_w_mm, tol)
+                and units.size_close(h_mm, first_h_mm, tol)):
+            doc.close()
+            return PrintResult.failed(
+                printer_name,
+                PrintError(
+                    PrintError.PAPER_SIZE_MISMATCH,
+                    f"PDF 第 {page_index + 1} 页尺寸 "
+                    f"{w_mm:.2f}×{h_mm:.2f}mm 与首页 "
+                    f"{first_w_mm:.2f}×{first_h_mm:.2f}mm 不一致，"
+                    "禁止按不同尺寸混排输出。",
+                    resolution="请确保 PDF 所有页面尺寸一致后再提交。",
+                ),
+            )
+
     printer = QPrinter(QPrinter.HighResolution)
     printer.setPrinterName(printer_name)
     if not printer.printerName():
@@ -157,26 +255,31 @@ def print_pdf_via_qt(printer_name: str, pdf_path: str,
                        resolution=f"系统中找不到队列：{printer_name}"),
         )
 
-    paper = spec.paper
-    # 精确毫米页面，ExactMatch 阻止驱动按内置纸张自动缩放
-    page_size = QPageSize(
-        QSizeF(paper.width_mm, paper.height_mm),
-        QPageSize.Millimeter,
-        QPageSize.ExactMatch,
-    )
-    printer.setPageSize(page_size)
-    orientation = (
+    # 方向先由 units.orient_paper 归一为物理尺寸，再用单个 setPageLayout
+    # 原子下发页面+方向，避免 setPageSize 后 setOrientation 二次换向。
+    physical = units.orient_paper(effective_page, spec.orientation)
+    qt_orientation = (
         QPageLayout.Landscape
         if spec.orientation == JobOrientation.LANDSCAPE
         else QPageLayout.Portrait
     )
-    printer.setOrientation(orientation)
-    printer.setPageMargins(
-        QMarginsF(0.0, 0.0, 0.0, 0.0), QPageLayout.Millimeter
+    page_size = QPageSize(
+        QSizeF(physical.width_mm, physical.height_mm),
+        QPageSize.Millimeter,
+        QPageSize.ExactMatch,
+    )
+    printer.setPageLayout(
+        QPageLayout(
+            page_size,
+            qt_orientation,
+            QMarginsF(0.0, 0.0, 0.0, 0.0),
+            QPageLayout.Millimeter,
+        )
     )
     target_dpi = spec.dpi or printer.defaultResolution()
     if target_dpi:
         printer.setResolution(target_dpi)
+    # 任务份数唯一应用点：PDF 内容不含任务份数，此处不复制页面。
     printer.setCopyCount(max(1, int(spec.copies)))
     printer.setQuality(_quality_to_qt(spec.quality))
 
@@ -194,15 +297,16 @@ def print_pdf_via_qt(printer_name: str, pdf_path: str,
         for page_index in range(doc.pageCount()):
             if page_index > 0:
                 printer.newPage()
-            px_w = max(1, round(paper.width_mm / 25.4 * dpi))
-            px_h = max(1, round(paper.height_mm / 25.4 * dpi))
+            # 渲染像素与绘制矩形统一用 units.mm_to_dots 换算，禁止自乘 25.4
+            px_w = max(1, units.mm_to_dots(physical.width_mm, dpi))
+            px_h = max(1, units.mm_to_dots(physical.height_mm, dpi))
             image: QImage = doc.render(page_index, QSize(px_w, px_h))
             # 设备像素坐标下的精确毫米矩形，等比绘制，不拉伸
             rect = QRectF(
                 0.0,
                 0.0,
-                paper.width_mm / 25.4 * dpi,
-                paper.height_mm / 25.4 * dpi,
+                float(units.mm_to_dots(physical.width_mm, dpi)),
+                float(units.mm_to_dots(physical.height_mm, dpi)),
             )
             painter.drawImage(rect, image)
     finally:
@@ -223,10 +327,10 @@ def print_pdf_via_qt(printer_name: str, pdf_path: str,
                        resolution="打印机状态为 Error，任务未能进入队列。"),
         )
 
-    return PrintResult.queued(
-        printer_name, None,
-        message=(
-            f"已提交到打印队列：{printer_name}。"
-            "已提交到打印队列，不代表物理打印完成，请查看打印机输出。"
-        ),
-    )
+    message = None
+    if note:
+        message = (
+            f"已提交到打印队列：{printer_name}。{note}。"
+            "提交成功不代表物理打印完成，请查看打印机输出。"
+        )
+    return PrintResult.queued(printer_name, None, message=message)

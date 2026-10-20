@@ -9,7 +9,7 @@
 ; ============================================================
 
 #define MyAppName "CodeLabelStudio"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "CodeLabel Studio"
 #define MyAppExeName "CodeLabelStudio.exe"
 
@@ -123,7 +123,10 @@ begin
     '在 UAC 弹窗中点"是"确认；本程序不做静默安装，不关闭驱动签名检查，' +
     '不修改组策略或任何安全设置。' + #13#10 +
     '5. 若驱动安装失败：先在 Windows 中卸载残留驱动 → 重启电脑 → 从官方源' +
-    '重新下载并重装 → 检查打印队列是否恢复。' + #13#10;
+    '重新下载并重装 → 检查打印队列是否恢复。' + #13#10 +
+    '6. 启动驱动安装程序成功不等于驱动安装成功：请等待安装完成，返回软件' +
+    '点击『刷新打印机』重新枚举并核对队列与驱动状态。' + #13#10 +
+    '7. 本安装程序不会修改 Windows 驱动签名检查等安全设置。' + #13#10;
   DriverCheck := TNewCheckBox.Create(WizardForm);
   DriverCheck.Parent := DriverPage.Surface;
   DriverCheck.Left := 0;

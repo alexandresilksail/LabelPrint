@@ -130,6 +130,7 @@ class PrinterCapabilities:
     max_printable_height_mm: float | None = None
     supports_custom_paper: bool = False
     supports_true_size: bool = False      # 是否支持按 1:1 物理尺寸打印
+    supports_gap_sensor: bool = False     # 是否支持标签间隙传感（GAP/黑标定位）
     needs_vendor_driver: bool = False
     verified_with_hardware: bool = False  # 是否经真实设备实测（严禁伪造）
     notes: str = ""
@@ -188,6 +189,7 @@ class PrinterCapabilities:
             "max_printable_height_mm": self.max_printable_height_mm,
             "supports_custom_paper": self.supports_custom_paper,
             "supports_true_size": self.supports_true_size,
+            "supports_gap_sensor": self.supports_gap_sensor,
             "needs_vendor_driver": self.needs_vendor_driver,
             "verified_with_hardware": self.verified_with_hardware,
             "notes": self.notes,
@@ -220,6 +222,7 @@ class PrinterCapabilities:
         caps.max_printable_height_mm = d.get("max_printable_height_mm")
         caps.supports_custom_paper = bool(d.get("supports_custom_paper", False))
         caps.supports_true_size = bool(d.get("supports_true_size", False))
+        caps.supports_gap_sensor = bool(d.get("supports_gap_sensor", False))
         caps.needs_vendor_driver = bool(d.get("needs_vendor_driver", False))
         caps.verified_with_hardware = bool(d.get("verified_with_hardware", False))
         caps.notes = str(d.get("notes", ""))

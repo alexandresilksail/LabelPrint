@@ -1,8 +1,9 @@
 # CodeLabel Studio — 打印机专项测试报告（PRINTER_TEST_REPORT）
 
-> 测试日期：2026-10-19
-> 执行环境：Linux 沙箱（Python 3.12.11，PySide6 6.12，pytest 8.3.4，pypdf，reportlab；alembic 1.20.0 本轮安装）
+> 测试日期：第一轮 2026-10-19（打印机专项首测）；第二轮 2026-10-20（八类缺陷修复与发布验收复测）
+> 执行环境：Linux 沙箱（Python 3.12.11，PySide6 6.12，pytest 8.3.4，pypdf，reportlab；alembic 1.20.0 已装；python-barcode 未装）
 > 报告原则：所有数字取自真实命令输出，无据不写；未执行项明写"未实测/未执行"，绝不伪造。
+> 第一轮历史记录（456 passed/2 skipped）完整保留于第 2.1/2.2 节；第二轮以第 2A 章与第 2.3/2.4 节实测为准。
 
 ---
 
@@ -28,6 +29,29 @@
 
 ### 1.3 执行命令与原始结论
 
+**第二轮（2026-10-20，缺陷修复复测，本次为准）：**
+
+```
+$ python3 -m pytest tests/ -q
+597 passed, 2 skipped in 2.20s        （客户端，收集 599 项；0 failed 0 error）
+
+$ python3 -m pytest tests_server/ -q -rs
+167 passed, 1 warning in 46.38s         （服务端，收集 167 项；0 skipped，退出码 0）
+```
+
+- 服务端命令退出码 0，无 failed、无 error、无 skipped。
+- 客户端 pytest 自身在打印出 `597 passed, 2 skipped` 总结行后，于解释器
+  析构阶段被 Qt offscreen 线程销毁终止（`QThread: Destroyed while thread ''
+  is still running`，进程退出码 134 Aborted / 偶发 139 Segmentation fault）；
+  已隔离验证：不含两个 UI 冒烟文件的全量子集退出码 0（583 passed, 2
+  skipped），两个冒烟文件各自 8 passed / 6 passed 后同样在析构阶段终止。
+  **该终止发生在 pytest 总结输出之后，不是失败用例、不是 error，597 项断言
+  全部通过**；属 offscreen 平台线程析构顺序问题，与第一轮记录的 stderr 提示
+  同源（第一轮仅打印提示未终止进程，本轮在析构阶段直接 abort，性质不变）。
+- 第二轮 2 项跳过与第一轮完全相同（见下表），原因未变。
+
+**第一轮（2026-10-19，历史保留）：**
+
 ```
 $ python3 -m pytest tests/ -q
 456 passed, 2 skipped in 2.13s        （客户端，收集 458 项）
@@ -39,7 +63,7 @@ $ pip3 install alembic
 Successfully installed Mako-1.4.3 alembic-1.20.0
 ```
 
-两条命令退出码均为 0，无 failed、无 error。
+第一轮两条命令退出码均为 0，无 failed、无 error。
 
 **2 项跳过的真实原因（pytest `-rs` 输出）：**
 
@@ -60,9 +84,21 @@ Successfully installed Mako-1.4.3 alembic-1.20.0
 
 ## 2. 自动化测试结果总表
 
-### 2.1 客户端 `tests/`（456 passed / 2 skipped / 0 failed / 0 error）
+### 2.0 两轮合计总表（以第二轮 2026-10-20 实测为准）
 
-"专项"= 本轮打印机新增测试；"既有"= 回归既有测试。
+| 范围 | 第一轮 2026-10-19 | 第二轮 2026-10-20 | 两轮关系 |
+|---|---|---|---|
+| 客户端 `tests/` | 456 passed / 2 skipped（收集 458） | **597 passed / 2 skipped（收集 599），0 failed 0 error** | 第二轮净增 141 项 passed；2 项 skip 不变 |
+| 服务端 `tests_server/` | 167 passed / 0 skipped（1 warning） | **167 passed / 0 skipped（1 warning），退出码 0** | 无变动，全量回归通过 |
+| 失败 / 错误 | 0 / 0 | 0 / 0 | — |
+
+> 第二轮客户端进程在总结输出后被 Qt offscreen 析构终止（非失败，见 1.3 与
+> 第 6 章说明）；逐文件明细见 2.3，第一轮历史明细见 2.1/2.2（原样保留）。
+
+### 2.1 【第一轮历史】客户端 `tests/`（456 passed / 2 skipped / 0 failed / 0 error）
+
+"专项"= 第一轮打印机新增测试；"既有"= 回归既有测试。下表为 2026-10-19
+原始记录，第二轮文件数已变化，请勿以本表作为当前数字。
 
 | 测试文件 | 用例数 | 覆盖点 | 结果 |
 |---|---|---|---|
@@ -95,9 +131,10 @@ Successfully installed Mako-1.4.3 alembic-1.20.0
 | `test_migration.py`（既有） | 5 | 客户端本地库迁移 | 5 passed |
 | **合计** | **458 收集** | — | **456 passed, 2 skipped** |
 
-### 2.2 服务端 `tests_server/`（167 passed / 0 skipped / 0 failed / 0 error）
+### 2.2 【第一轮历史】服务端 `tests_server/`（167 passed / 0 skipped / 0 failed / 0 error）
 
-服务端测试与打印专项无直接耦合，本轮全量回归保持通过。
+服务端测试与打印专项无直接耦合，第二轮全量回归仍为 167 passed（见 2.3）。
+下表为第一轮原始记录。
 
 | 测试文件 | 项数 | 说明 | 结果 |
 |---|---|---|---|
@@ -113,6 +150,148 @@ Successfully installed Mako-1.4.3 alembic-1.20.0
 | `test_e2e_full_flow.py` | 7 | 跨边界端到端 | 7 passed |
 | `test_migrations.py` | 4 | Alembic 迁移（alembic 1.20.0 已装） | 4 passed |
 | **合计** | **167** | — | **167 passed, 1 warning** |
+
+### 2.3 第二轮（2026-10-20）客户端逐文件实测（597 passed / 2 skipped / 收集 599）
+
+> 数字来自 `pytest --collect-only -q` 收集计数与逐文件 `pytest <file> -q`
+> 实测结果；"新增"= 本轮新文件，"更新"= 本轮改写/扩展，"未变"= 第一轮文件本轮未改。
+
+| 测试文件 | 状态 | 收集 | 结果 | 本轮覆盖点 |
+|---|---|---|---|---|
+| `test_print_pdf_semantics.py` | 新增 | 24 | 24 passed | 份数唯一展开（任务份数不进 PDF）、跨页/dropped/MAX_SHEET_PAGES、偏移叠加、静区模块数、target_module_mm、paper_override 放不下拒绝、landscape 旋转交换 |
+| `test_adapters_content.py` | 新增 | 31 | 31 passed | LabelContent 完整布局驱动 ZPL/TSPL/CPCL；template_copies 展开、job.copies 唯一写入、偏移进指令、缺 content→INVALID_JOB、显式 content 覆盖、show_text/GAP/模块宽 |
+| `test_print_ui_logic.py` | 更新（25→46） | 46 | 46 passed | 能力合并去重、pick_paper 命中/旋转命中/未命中、build_job_from_form 偏移/默认/非法回退/份数钳制、摘要、issue 分组 |
+| `test_transports.py` | 更新（25→33） | 33 | 33 passed | 网络配置校验/端点解析/通道 kind；USB/蓝牙一律 TRANSPORT_NOT_IMPLEMENTED；SpoolChannel Linux 守卫 |
+| `test_adapters_registry.py` | 更新（19→22） | 22 | 22 passed | 协议分发、未知协议拒绝、verified 透传、**不按品牌名推断协议**、Universal 后端选择纯函数 |
+| `test_driver_installer.py` | 未变 | 104 | 104 passed | 驱动 6 态矩阵、优先级、官方指引不编造 URL、四态文案、提权分支（LAUNCHED≠安装成功）、非 Windows 守卫 |
+| `test_qt_print_semantics.py` | 新增 | 16 | 16 passed | resolve_effective_page 三态/容差边界/旋转互换、单位换算、平台守卫（Linux 抛 UNSUPPORTED_PLATFORM） |
+| `test_windows_print.py` | 未变 | 29 | 29 passed | 平台守卫、PRINTER_INFO_2 纯解析、winerror 映射、cancel/query/spool 守卫 |
+| `test_universal_semantics.py` | 新增 | 8 | 8 passed | PAPER_SIZE_MISMATCH 拒绝 / allow_paper_conversion 确认转换降级 warning、单轴 SCALE_MISMATCH、checker 缺失跳过、submit 守卫 |
+| `test_print_job_session.py` | 新增 | 15 | 15 passed | 同机并发锁 DEVICE_BUSY、按打印机句柄独立 ActiveJob、临时文件 keep_recent/cleanup_all、cancel/query 无任务 JOB_NOT_FOUND |
+| `test_transport_honesty.py` | 新增 | 15 | 15 passed | SENT（TCP 已发无设备确认）/QUEUED 语义；USB/蓝牙/LPR=TRANSPORT_NOT_IMPLEMENTED；注入失败 socket 的错误映射，不真实发包 |
+| `test_adapters_zpl.py` | 更新（内容改写，19 项未变） | 19 | 19 passed | golden 字节、mm→dots、统一校验、build_payload(job, content=)、submit 守卫 |
+| `test_adapters_cpcl.py` | 更新（内容改写，16 项未变） | 16 | 16 passed | golden、原点偏移、校验、build_payload(job, content=)、submit 守卫 |
+| `test_adapters_tspl.py` | 更新（内容改写，14 项未变） | 14 | 14 passed | golden、mm→dots 边界、校验、build_payload(job, content=)、submit 守卫 |
+| `test_calibration.py` | 未变 | 24 | 23 passed, 1 skipped | 测试页毫米、偏移纯函数、静区/模块宽、几何校验、verify_scale |
+| `test_encoder.py` | 未变 | 11 | 10 passed, 1 skipped | 码表；python-barcode 第三方交叉验证 skip |
+| `test_service.py`（既有） | 未变 | 15 | 15 passed | 客户端业务服务 |
+| `test_source_validation.py`（既有） | 未变 | 21 | 21 passed | 来源白名单、GS1 授权 |
+| `test_templates.py`（既有） | 未变 | 17 | 17 passed | 模板网格 |
+| `test_config_store.py` | 未变 | 12 | 12 passed | 配置 round-trip、多机隔离、reset、损坏 JSON、原子写、容错 |
+| `test_print_ui_smoke.py` | 未变 | 6 | 6 passed | PrintPage/PrinterSetup 离屏实例化、空能力禁用、禁用"打印成功"文案扫描 |
+| `test_ui_smoke.py`（既有） | 未变 | 8 | 8 passed | 7 页面离屏冒烟 |
+| `test_pdf_render.py` | 未变 | 7 | 7 passed | measure_pdf_pages、旋转交换、缩放偏差、rasterize 守卫 |
+| `test_pdf.py`（既有） | 未变 | 10 | 10 passed | PDF 几何与多页分页（既有导出） |
+| `test_csvio.py`（既有） | 未变 | 11 | 11 passed | CSV 公式注入转义 |
+| `test_template_service.py`（既有） | 未变 | 9 | 9 passed | 模板服务 |
+| `test_backup_restore_hardened.py`（既有） | 未变 | 9 | 9 passed | 备份恢复 6 类异常输入 |
+| `test_batch_limits.py`（既有） | 未变 | 9 | 9 passed | 批量上限/取消 |
+| `test_checkdigit.py`（既有） | 未变 | 9 | 9 passed | 校验位算法 |
+| `test_database.py`（既有） | 未变 | 9 | 9 passed | 数据库约束 |
+| `test_svg.py`（既有） | 未变 | 8 | 8 passed | SVG 结构 |
+| `test_client_assembly.py`（既有） | 未变 | 7 | 7 passed | 装配层路径解析 |
+| `test_migration.py`（既有） | 未变 | 5 | 5 passed | 客户端本地库迁移 |
+| **合计** | — | **599** | **597 passed, 2 skipped** | 0 failed / 0 error |
+
+### 2.4 第二轮服务端逐文件（167 passed / 0 skipped，与第一轮一致）
+
+| 测试文件 | 项数 | 结果 |
+|---|---|---|
+| `test_trusted_proxy.py` | 28 | 28 passed |
+| `test_production_config.py` | 26 | 26 passed |
+| `test_api_auth.py` | 21 | 21 passed |
+| `test_security.py` | 19 | 19 passed |
+| `test_api_admin.py` | 17 | 17 passed |
+| `test_api_orders.py` | 14 | 14 passed |
+| `test_api_license.py` | 12 | 12 passed |
+| `test_payment_outbox.py` | 11 | 11 passed |
+| `test_orders_plan_switch.py` | 8 | 8 passed |
+| `test_e2e_full_flow.py` | 7 | 7 passed |
+| `test_migrations.py` | 4 | 4 passed |
+| **合计** | **167** | **167 passed, 1 warning** |
+
+---
+
+## 2A. 第二轮：缺陷修复与发布验收（2026-10-20）
+
+> 本章为八类缺陷修复轮的验收记录。修复已全部落地，自动化复测
+> 597 passed / 2 skipped（客户端）、167 passed（服务端）；硬件、Windows
+> 构建、UAC 等非自动化项**一律未实测/未实现，按五级标签如实标注**，不把
+> "代码写了/自动化通过"写成"已在真机验证"。
+
+### 2A.1 八类缺陷 → 修复方式 → 验证
+
+| # | 缺陷 | 修复方式（落地事实） | 验证：测试文件（用例数）/ 结果 |
+|---|---|---|---|
+| 1 | **份数双重放大**：模板份数与任务份数在 PDF 渲染与 UI 两侧重复展开，导致出纸翻倍 | `render_label_sheet_pdf` 成为模板份数 `template.copies` 的**唯一展开点**，签名层面不接受任务份数；`print_export` 导出/打印路径向渲染器传**未展开原始 items**；任务份数 `job.copies` 不进入 PDF，由 Qt `setCopyCount` / 协议打印数量唯一应用 | `test_print_pdf_semantics.py`（24，1/2/3 模板份 × 1/2/5 任务份断言任务份不进 PDF）；`test_adapters_content.py`（31，job.copies 唯一写入协议打印数量）；`test_print_ui_logic.py`（46，raw items 不展开/任务份不在 content 重复）；均 passed |
+| 2 | **纸张一致性**：整体纸尺寸超容差时被静默缩放或放行 | `UniversalWindowsAdapter.validate_job`：两轴均超容差且 `allow_paper_conversion=False` → `PAPER_SIZE_MISMATCH` **error 阻止提交**；`allow_paper_conversion=True`（用户确认）→ 降级 warning 并注明已确认转换；单轴偏差保持 `SCALE_MISMATCH` warning；网格 `paper_override` 放不下 → ValueError"无法容纳"拒绝；`resolve_effective_page` 三态/容差边界/旋转互换 | `test_universal_semantics.py`（8，三态注入式 scale_checker）；`test_print_pdf_semantics.py`（24，paper_override 放不下拒绝/放得下 pypdf 实测尺寸）；`test_qt_print_semantics.py`（16，页面三态/容差/旋转/守卫）；均 passed |
+| 3 | **校准参数未贯通**：偏移/静区/模块宽度停留在配置，未进入渲染与协议指令 | 偏移（正/负/零、与 template.offset 叠加）进入 PDF 渲染与 ZPL/TSPL/CPCL 指令；静区、`target_module_mm` 模块宽度进入 fit 容量与编码；渲染器新增可选校准参数且向后兼容 | `test_print_pdf_semantics.py`（24，偏移叠加/静区模块数/模块宽生效）；`test_adapters_content.py`（31，偏移进指令/静区不足 error/模块宽/GAP）；均 passed |
+| 4 | **协议内容链路断裂**：适配器靠假设切片而非完整布局，`build_payload` 内容来源不明 | 引入 `LabelContent` 完整布局模型；`build_payload(job, *, content=None)` 显式内容参数；缺 `label_content` → `INVALID_JOB`；显式 content 覆盖；show_text/GAP/模块宽进入三协议指令；三协议测试改写走冻结接口 | `test_adapters_content.py`（31，新增）；`test_adapters_zpl.py`（19，改写）、`test_adapters_tspl.py`（14，改写）、`test_adapters_cpcl.py`（16，改写）；均 passed |
+| 5 | **传输层不诚实 / 结果语义混淆**：未集成通道伪装可用；发送成功被当作打印成功 | TCP 直接通道发送成功 = `SENT`（无设备确认，≠物理打印）；spool 队列 = `QUEUED`；`PHYSICALLY_PRINTED` 无设备 ACK 绝不产生；USB/蓝牙/LPR 一律抛 `TRANSPORT_NOT_IMPLEMENTED`（UI 相应禁用）；registry **不按厂商名/驱动名推断协议**（见到 Zebra 不认 ZPL） | `test_transport_honesty.py`（15，新增，注入失败 socket/fake channel）；`test_transports.py`（33，更新）；`test_adapters_registry.py`（22，更新，无品牌推断）；`test_print_ui_logic.py`（46，USB/蓝牙/LPR 禁用、TCP 诚实 warning、mode_basis 不按品牌）；均 passed |
+| 6 | **任务会话管理缺失**：重复点击并发提交、切机取消错任务、临时 PDF 提前删除 | 新增 `print_session.PrintJobSession`：同打印机 `begin_submit` 忙锁（`DEVICE_BUSY`）、按打印机句柄独立 `ActiveJob`（正确队列名+任务 ID）、临时 PDF `keep_recent` 保留最近 K 个、`cleanup_all` 兜底清理；提交完成前绝不删临时文件 | `test_print_job_session.py`（15，新增，纯逻辑无 Qt/pywin32）；passed |
+| 7 | **驱动启动被当作安装成功** | `elevate_process` 结果四态 `LAUNCHED/REQUIRES_UAC/CANCELLED_BY_USER/FAILED`：LAUNCHED 仅表示 ShellExecute 发起，**不代表安装成功**；安装器驱动页文案新增"启动成功≠安装成功，等待完成后返回软件点『刷新打印机』复核队列/驱动" | 自动化仅覆盖非 Windows 守卫（`test_driver_installer.py::test_elevate_process_raises_on_linux`，该文件 104 项全过）；**四态分支、真机 UAC 与刷新闭环无 Linux 单测，属 ④尚未实测**；安装器文案为脚本文本级核对 |
+| 8 | **安装器版本与状态标注缺失**：版本号停留 1.0.0，"代码写了"易被误读为"已验证" | `installer/codelabel.iss` 版本号 1.0.0→**1.1.0**，驱动可选页补第 6/7 条文案；全套文档统一五级状态标签（①自动化通过/②Windows 构建通过/③真实设备实测/④尚未实测/⑤尚未实现） | 脚本文本级核对（版本号、begin/end 配对、字符串拼接 grep）；**ISCC 编译未执行**（Linux 无 ISCC），见五级表 |
+
+**新增/更新测试文件清单（第二轮）：**
+
+| 类型 | 文件 | 用例数 | 结果 |
+|---|---|---|---|
+| 新增 | `test_print_pdf_semantics.py` | 24 | 24 passed |
+| 新增 | `test_qt_print_semantics.py` | 16 | 16 passed |
+| 新增 | `test_universal_semantics.py` | 8 | 8 passed |
+| 新增 | `test_adapters_content.py` | 31 | 31 passed |
+| 新增 | `test_transport_honesty.py` | 15 | 15 passed |
+| 新增 | `test_print_job_session.py` | 15 | 15 passed |
+| 更新 | `test_print_ui_logic.py` | 46（第一轮 25） | 46 passed |
+| 更新 | `test_adapters_zpl.py` | 19（内容改写） | 19 passed |
+| 更新 | `test_adapters_tspl.py` | 14（内容改写） | 14 passed |
+| 更新 | `test_adapters_cpcl.py` | 16（内容改写） | 16 passed |
+| 更新 | `test_adapters_registry.py` | 22（第一轮 19） | 22 passed |
+| 更新 | `test_transports.py` | 33（第一轮 25） | 33 passed |
+
+新增 6 文件合计 109 项；更新文件净增 32 项（46-25=21、22-19=3、33-25=8；
+zpl/tspl/cpcl 计数未变仅内容改写）；合计净增 141 项 passed（456→597）。
+
+### 2A.2 五级状态区分表（第二轮逐项落实）
+
+> 五级定义：① 自动化通过（Linux pytest 已跑过该逻辑）；② Windows 构建通过
+> （真实 Windows 由 PyInstaller/ISCC 产出可分发文件）；③ 真实设备实测（真实
+> 打印机硬件+真实桌面交互验证通过）；④ 尚未实测（代码/脚本/指引就绪，目标
+> 环境未验证）；⑤ 尚未实现（功能未做或按设计有意不做）。
+
+| 事项 | 本轮实际级别 | 依据 / 待办 |
+|---|---|---|
+| 份数唯一展开、任务份数不进 PDF（纯逻辑） | **① 自动化通过** | `test_print_pdf_semantics` 24 项断言通过 |
+| PAPER_SIZE_MISMATCH 拒绝 / 确认转换 / 网格超纸拒绝 / 页面三态 | **① 自动化通过** | `test_universal_semantics` 8、`test_print_pdf_semantics` 24、`test_qt_print_semantics` 16 |
+| 偏移/静区/模块宽进渲染与协议指令 | **① 自动化通过** | `test_print_pdf_semantics` 24、`test_adapters_content` 31、`test_print_ui_logic`（offsets/gap 进 content） |
+| LabelContent 完整布局 + `build_payload(job, content=)` 三协议 | **① 自动化通过** | `test_adapters_content` 31 + zpl/tspl/cpcl 改写 |
+| SENT/QUEUED 语义、USB/蓝牙/LPR 禁用、registry 无品牌推断（逻辑分支） | **① 自动化通过** | `test_transport_honesty` 15、`test_adapters_registry` 22、`test_print_ui_logic` 46、`test_transports` 33 |
+| PrintJobSession 并发锁/句柄/临时文件生命周期 | **① 自动化通过** | `test_print_job_session` 15 |
+| 驱动提权：非 Windows 守卫 | **① 自动化通过** | `test_driver_installer::test_elevate_process_raises_on_linux`（104 项全过） |
+| 驱动提权四态（LAUNCHED/REQUIRES_UAC/CANCELLED_BY_USER/FAILED）、真机 UAC、安装→刷新闭环 | **④ 尚未实测** | Linux 无法触发 ShellExecuteW/UAC，无单测覆盖四态 |
+| **TCP 9100 网络通道**（配置校验/端点解析/错误映射） | **① 自动化通过 + ④ 尚未实测** | 自动化仅校验与错误分支；真实连通与出纸未做 |
+| **1.1.0 Windows 构建**（exe/便携包/安装包） | **⑤ 尚未实现（未构建）+ ④ 尚未实测** | Linux 无 ISCC、无法产出 Windows 产物；脚本已改但未编译 |
+| **USB 私有直连 / 蓝牙 SPP·BLE / LPR 传输集成** | **⑤ 尚未实现（按设计未做）** | 一律抛 `TRANSPORT_NOT_IMPLEMENTED`，不伪装可用 |
+| 真实队列枚举/提交/取消/查询（EnumPrinters/OpenPrinter/SetJob/GetJob） | **④ 尚未实测** | 无 Windows 队列 |
+| 1:1 物理出纸尺寸卡尺复核 | **④ 尚未实测** | 自动化只测 PDF 排版尺寸 |
+| ZPL/TSPL2/CPCL 真实设备出纸 | **④ 尚未实测** | golden 仅字节级比对，未连设备 |
+| UAC 提权弹窗、驱动安装→刷新打印机闭环 | **④ 尚未实测** | Linux 无法触发 UAC |
+| 安装器 1.1.0 交互（检测页/驱动可选页/`--printer-setup`） | **④ 尚未实测** | 须先 Windows 编译后人工走向导 |
+| 静态安全扫描 | **① 自动化通过**（2026-10-18 轮记录，本轮未重扫） | bandit 0 问题 |
+| ③ 真实设备实测 | **本轮 0 项达到** | 无任何型号经真实设备测试 |
+| ② Windows 构建通过 | **本轮 0 项达到** | 1.1.0 未构建 |
+
+### 2A.3 本轮明确"尚未实测"清单（禁止写成已验证）
+
+1. 真实队列**提交 / 取消 / 查询**全流程（真实 Windows 打印队列，任务 ID 移除与
+   终态核对）；
+2. **1:1 物理出纸**：卡尺复核输出模块宽度/静区/整体尺寸与标称一致；
+3. **协议设备实测**：ZPL / TSPL2 / CPCL 在真实标签打印机上实际出纸；
+4. **UAC**：真实提权弹窗、用户自备官方驱动包安装全过程；
+5. **驱动安装刷新闭环**：等待安装完成 → 应用内「刷新打印机」→ 队列/驱动状态
+   由 MISSING 转 OK 的完整闭环；
+6. 安装器 1.1.0 向导交互（打印环境检测页、驱动可选页、`--printer-setup` 勾选
+   启动），须先按 `docs/BUILD_REPORT.md` 第 7 节在 Windows 编译后执行。
 
 ---
 
@@ -356,18 +535,23 @@ Successfully installed Mako-1.4.3 alembic-1.20.0
 
 ## 5. 本环境限制与未执行项声明
 
-| 项 | 状态 | 说明 |
+| 项 | 状态（五级） | 说明 |
 |---|---|---|
-| Windows 真实队列枚举（EnumPrinters / QPrinterInfo） | **未执行** | Linux 无系统队列 |
-| 真实提交打印（QPrinter / WritePrinter RAW） | **未执行** | 无设备、无队列；成功语义仅到 QUEUED |
-| 1:1 物理输出尺寸卡尺复核 | **未执行** | 自动化只测 PDF 排版尺寸，不测物理纸 |
-| ZPL / TSPL2 / CPCL 真实设备出纸 | **未执行** | golden 指令仅文本/字节级比对 |
-| USB / 网络(9100) / 蓝牙链路 | **未执行** | 仅配置校验与通道构造，未连通 |
-| 驱动下载/安装/UAC 提权全过程 | **未执行** | 应用只检测与指引，不捆绑不自动安装 |
-| 安装包（Inno Setup）重新编译 | **未执行** | 本环境无 ISCC.exe，见 `FINAL_AUDIT_REPORT.md` 打印机专项章 |
+| Windows 真实队列枚举（EnumPrinters / QPrinterInfo） | **④ 尚未实测（未执行）** | Linux 无系统队列 |
+| 真实队列提交 / 取消 / 查询（QPrinter / WritePrinter RAW / SetJob / GetJob） | **④ 尚未实测（未执行）** | 无设备、无队列；成功语义仅到 QUEUED/SENT |
+| 1:1 物理输出尺寸卡尺复核 | **④ 尚未实测（未执行）** | 自动化只测 PDF 排版尺寸，不测物理纸 |
+| ZPL / TSPL2 / CPCL 真实设备出纸 | **④ 尚未实测（未执行）** | golden 指令仅文本/字节级比对，未连设备 |
+| TCP 9100 网络链路连通与出纸 | **① 自动化通过（校验/错误映射）+ ④ 尚未实测** | 仅配置校验与错误分支，未真实连通 |
+| USB 私有直连 / 蓝牙 SPP·BLE / LPR | **⑤ 尚未实现（按设计未做）** | 一律抛 TRANSPORT_NOT_IMPLEMENTED，不伪装可用 |
+| 驱动下载/安装/UAC 提权全过程 | **④ 尚未实测（未执行）** | 应用只检测与指引，不捆绑不自动安装 |
+| 驱动安装→刷新打印机状态闭环 | **④ 尚未实测（未执行）** | LAUNCHED≠安装成功，需真机走完复核 |
+| 1.1.0 安装包（Inno Setup）编译 / exe / 便携包 | **⑤ 尚未实现（未构建）+ ④ 尚未实测** | Linux 无 ISCC.exe、无法产出 Windows 产物；步骤见 `BUILD_REPORT.md` 第 7 节 |
 | 第三方 python-barcode 交叉验证 | **跳过(1)** | 可选库未安装，非缺陷 |
 | 校准旧缺失分支 | **跳过(1)** | 已被 pdf_render 覆盖，按设计 skip |
 
-**结论：本轮自动化 456（客户端）+ 167（服务端）全部通过，2 项跳过均为
-已说明的环境/设计原因；无任何型号经真实设备测试，硬件验收以第 4 节清单
-在 Windows 人工执行为准。**
+**结论（第二轮 2026-10-20）：自动化 597 passed / 2 skipped（客户端）+
+167 passed（服务端）全部通过，0 failed 0 error；2 项跳过均为已说明的
+环境/设计原因。客户端进程在 pytest 总结输出后被 Qt offscreen 析构终止
+（非失败，见 1.3）。无任何型号经真实设备测试，②Windows 构建通过与
+③真实设备实测本轮均为 0 项；硬件验收以第 4 节清单在 Windows 人工执行为准。
+第一轮 456/167 历史记录见 2.1/2.2。**

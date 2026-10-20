@@ -91,6 +91,12 @@ class PrinterSetup(QDialog):
         self.btn_guidance = QPushButton("驱动安装指引")
         self.btn_guidance.clicked.connect(self.open_driver_guidance)
         v.addWidget(self.btn_guidance)
+        self.guide_hint = MutedLabel(
+            "提示：启动驱动安装程序不等于安装成功；安装完成后请返回本页"
+            "点击“刷新打印机”重新枚举，并核对队列与驱动状态。")
+        v.addWidget(self.guide_hint)
+        self.cap_hint = MutedLabel("")
+        v.addWidget(self.cap_hint)
         v.addStretch(1)
 
         tabs.addTab(page, "检测")
@@ -200,6 +206,7 @@ class PrinterSetup(QDialog):
             self.detect_status.setText(
                 "未检测到打印机（需 Windows + 打印服务）")
             self.detect_driver_state.setText("")
+            self.cap_hint.setText("")
             self.empty_hint.show()
             self.btn_guidance.setEnabled(False)
             self._set_params_enabled(False)
@@ -218,6 +225,12 @@ class PrinterSetup(QDialog):
             is_offline=bool(caps.status and caps.status.offline),
         )
         self.detect_driver_state.setText(install_guidance_for_state(state))
+
+        # 设备能力如实提示（间隙传感 / 1:1 / 未实测）
+        hints = L.capability_hints(caps)
+        if not caps.supports_gap_sensor:
+            hints.insert(0, "该设备不支持间隙传感，间隙仅用于专用协议打印/不生效")
+        self.cap_hint.setText("\n".join(f"· {h}" for h in hints))
 
         self._populate_papers()
         self._load_params(caps.printer_name)

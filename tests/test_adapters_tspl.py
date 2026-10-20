@@ -1,6 +1,7 @@
 """TSPL 适配器测试：golden 字节、mm↔dots 边界、统一校验全覆盖。
 
-不依赖 A 切片；submit 在 Linux 仅断言 UNSUPPORTED_PLATFORM 分支。
+内容模型走冻结接口 ``build_payload(job, *, content=None)``；不依赖 A 切片；
+submit 在 Linux 仅断言 UNSUPPORTED_PLATFORM 分支。
 """
 
 import pytest
@@ -11,7 +12,7 @@ from client.printing.capabilities import (
     PaperSize, PrinterCapabilities, Protocol, Transport,
 )
 from client.printing.errors import PrintError
-from client.printing.job import LabelJobSpec
+from client.printing.job import LabelContent, LabelJobSpec
 
 
 def make_caps(**over):
@@ -20,39 +21,55 @@ def make_caps(**over):
         transport=Transport.LOCAL,
         protocol=Protocol.TSPL,
         dpi=203,
-        supported_papers=(PaperSize("50x30", 50.0, 30.0),),
-        max_printable_width_mm=100.0,
-        max_printable_height_mm=100.0,
+        supported_papers=(PaperSize("100x60", 100.0, 60.0),),
+        max_printable_width_mm=200.0,
+        max_printable_height_mm=200.0,
     )
     base.update(over)
     return PrinterCapabilities(**base)
 
 
+def make_content(**over):
+    base = dict(
+        items=[("123456789012", "CODE128")],
+        template_copies=1,
+        label_width_mm=100.0,
+        label_height_mm=60.0,
+        barcode_height_mm=15.0,
+        show_text=True,
+        module_mm=0.33,
+        quiet_modules=11,
+        label_gap_mm=2.0,
+    )
+    base.update(over)
+    return LabelContent(**base)
+
+
 def valid_job(**over):
     base = dict(
-        paper=PaperSize("50x30", 50.0, 30.0),
+        paper=PaperSize("100x60", 100.0, 60.0),
         copies=1, dpi=203, module_mm=0.33, label_gap_mm=2.0,
+        label_content=make_content(),
     )
     base.update(over)
     return LabelJobSpec(**base)
 
 
 # ---------------------------------------------------------------------------
-# golden
+# golden（100x60mm @203dpi，GAP 2mm ≈ 16 dots）
 # ---------------------------------------------------------------------------
 
 def test_golden_code128():
     adapter = TSPLAdapter(make_caps())
-    payload = adapter.build_payload(
-        valid_job(), barcode_data="123456789012", barcode_type="CODE128")
+    payload = adapter.build_payload(valid_job())
     assert payload == (
-        b"SIZE 400 dots, 240 dots\r\n"
+        b"SIZE 799 dots, 480 dots\r\n"
         b"GAP 16 dots, 0\r\n"
         b"DENSITY 203\r\n"
         b"DIRECTION 1,0\r\n"
         b"REFERENCE 0,0\r\n"
         b"CLS\r\n"
-        b'CODE128 24,24,"123456789012",120,1,0,2,2,48,0\r\n'
+        b'CODE128 33,24,"123456789012",120,1,0,2,2,48,0\r\n'
         b"PRINT 1\r\n"
         b"EOP\r\n"
     )
@@ -60,16 +77,17 @@ def test_golden_code128():
 
 def test_golden_ean13():
     adapter = TSPLAdapter(make_caps())
-    payload = adapter.build_payload(
-        valid_job(), barcode_data="5901234123457", barcode_type="EAN13")
+    job = valid_job(label_content=make_content(
+        items=[("5901234123457", "EAN13")]))
+    payload = adapter.build_payload(job)
     assert payload == (
-        b"SIZE 400 dots, 240 dots\r\n"
+        b"SIZE 799 dots, 480 dots\r\n"
         b"GAP 16 dots, 0\r\n"
         b"DENSITY 203\r\n"
         b"DIRECTION 1,0\r\n"
         b"REFERENCE 0,0\r\n"
         b"CLS\r\n"
-        b'EAN13 24,24,"5901234123457",120,1,0,2,2,0\r\n'
+        b'EAN13 33,24,"5901234123457",120,1,0,2,2,0\r\n'
         b"PRINT 1\r\n"
         b"EOP\r\n"
     )
@@ -82,7 +100,7 @@ def test_golden_ean13():
 def test_mm_to_dots_boundaries():
     assert mm_to_dots(25.4, 203) == 203
     assert mm_to_dots(-25.4, 300) == -300
-    assert mm_to_dots(50.0, 203) == 400
+    assert mm_to_dots(100.0, 203) == 799
     # 2mm 间隙 @203dpi ≈ 16 dots（golden GAP）
     assert mm_to_dots(2.0, 203) == 16
 
@@ -106,7 +124,7 @@ def test_missing_paper_is_error():
 
 
 def test_paper_out_of_printable_area():
-    job = valid_job(paper=PaperSize("big", 200.0, 100.0))
+    job = valid_job(paper=PaperSize("big", 300.0, 100.0))
     issues = TSPLAdapter(make_caps()).validate_job(job)
     assert ("error", PrintError.PAPER_OUT_OF_RANGE) in issue_codes(issues)
 

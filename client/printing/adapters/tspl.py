@@ -10,7 +10,15 @@
 支持 DPI：203 / 300 / 600（常见 TSC 机型）。
 
 统一校验机制与 :mod:`client.printing.adapters._common` 登记规则一致，
-本适配器不绕过。raw 通道无 ACK，``submit`` 一律 QUEUED。
+本适配器不绕过。
+
+内容模型（冻结接口）：``build_payload(job, *, content=None)``，
+``items`` 按 ``template_copies`` 展开，每实例一个
+``SIZE/GAP/DENSITY/DIRECTION/REFERENCE/CLS/BARCODE/PRINT/EOP`` 块；
+``job.copies`` 由每实例 ``PRINT n`` 唯一应用。
+
+发送语义：TCP 9100 发送成功只返回 ``SENT``（无设备确认，≠物理打印成功）；
+spool 队列返回 ``QUEUED``。
 """
 
 from __future__ import annotations
@@ -18,14 +26,19 @@ from __future__ import annotations
 from ..capabilities import PrinterCapabilities
 from ..errors import PrintError
 from ..job import (
-    JobState, LabelJobSpec, PrintResult, ValidationIssue,
+    JobState, LabelContent, LabelJobSpec, PrintResult, ValidationIssue,
 )
+from ..templates import GS1_MAX_MODULE_MM, GS1_MIN_MODULE_MM
 from ._common import (
-    collect_common_issues, effective_dpi, effective_module_mm,
-    has_error, mm_to_dots,
+    collect_common_issues, dpi_support_issue, effective_dpi,
+    estimate_barcode_width_dots, expand_label_instances, has_error,
+    mm_to_dots, quiet_zone_issue, resolve_label_content, resolve_module_mm,
 )
 from .base import BasePrinterAdapter
 from .transports import TransportChannel, build_channel
+
+#: 条码顶部默认边距（mm，BARCODE Y 起点）
+_DEFAULT_TOP_MARGIN_MM = 3.0
 
 #: TSPL 支持的条码命令映射（命令名, 参数字符串生成器由 build_payload 处理）
 _BARCODE_COMMANDS = {
@@ -33,6 +46,7 @@ _BARCODE_COMMANDS = {
     "EAN13": "EAN13",
     "EAN-13": "EAN13",
 }
+_SUPPORTED_BARCODES = ("CODE128", "EAN13")
 
 
 class TSPLAdapter(BasePrinterAdapter):
@@ -45,77 +59,125 @@ class TSPLAdapter(BasePrinterAdapter):
         super().__init__(capabilities)
         self._channel = channel
 
-    # ---- 校验（统一机制，规则见 _common.collect_common_issues） ----
+    # ---- 校验（统一机制 + TSPL 特有检查） ----
     def validate_job(self, job: LabelJobSpec) -> list[ValidationIssue]:
-        return collect_common_issues(job, self._capabilities)
+        return self._issues(job, job.label_content)
 
-    # ---- 构建 ----
+    def _issues(
+        self, job: LabelJobSpec, content: LabelContent | None
+    ) -> list[ValidationIssue]:
+        issues = collect_common_issues(job, self._capabilities)
+
+        dpi = effective_dpi(job, self._capabilities)
+        dpi_issue = dpi_support_issue(dpi, self.SUPPORTED_DPI, job.dpi)
+        if dpi_issue is not None:
+            issues.append(dpi_issue)
+
+        if content is None or dpi is None:
+            return issues
+
+        module_mm = resolve_module_mm(job, content)
+        if not (GS1_MIN_MODULE_MM - 0.05 <= module_mm <= GS1_MAX_MODULE_MM + 0.05):
+            issues.append(
+                ValidationIssue.error(
+                    PrintError.MODULE_WIDTH_OUT_OF_RANGE,
+                    f"模块宽度 {module_mm:.3f}mm 超出可识读范围 "
+                    f"[{GS1_MIN_MODULE_MM}, {GS1_MAX_MODULE_MM}]mm",
+                )
+            )
+
+        if content.template_copies < 1:
+            issues.append(
+                ValidationIssue.error(
+                    PrintError.INVALID_JOB,
+                    f"template_copies 必须 >=1（当前 {content.template_copies!r}）",
+                )
+            )
+
+        module_dots = mm_to_dots(module_mm, dpi)
+        origin_x = content.quiet_modules * module_dots
+        label_w = mm_to_dots(content.label_width_mm, dpi)
+        for value, btype in expand_label_instances(content):
+            if btype.upper() not in _BARCODE_COMMANDS:
+                continue
+            bw = estimate_barcode_width_dots(btype, value, module_dots)
+            qz = quiet_zone_issue(content, module_dots, label_w, origin_x, bw)
+            if qz is not None:
+                issues.append(qz)
+                break
+        return issues
+
+    # ---- 构建（冻结接口：build_payload(job, *, content=None)） ----
     def build_payload(
         self,
         job: LabelJobSpec,
         *,
-        barcode_data: str | None = None,
-        barcode_type: str = "CODE128",
-        origin_x_mm: float = 3.0,
-        origin_y_mm: float = 3.0,
-        bar_height_mm: float = 15.0,
+        content: LabelContent | None = None,
     ) -> bytes:
-        """生成 TSPL2 指令（SIZE/GAP/DENSITY/DIRECTION/REFERENCE/CLS/
-        BARCODE/PRINT/EOP），坐标单位为 dots。"""
-        issues = self.validate_job(job)
+        """生成逐实例 TSPL2 指令块，坐标单位为 dots。
+
+        - ``content`` 缺省取 ``job.label_content``，两者皆空抛 INVALID_JOB；
+        - 偏移经 ``REFERENCE`` 进入；间隙经 ``GAP``；任务份数由 ``PRINT n``。
+        """
+        c = resolve_label_content(job, content)
+        issues = self._issues(job, c)
         if has_error(issues):
             first = next(i for i in issues if i.severity == "error")
             raise PrintError(first.code, first.message)
 
         dpi = effective_dpi(job, self._capabilities)
         assert dpi is not None
-        paper = job.paper
-        assert paper is not None
 
-        width_dots = mm_to_dots(paper.width_mm, dpi)
-        height_dots = mm_to_dots(paper.height_mm, dpi)
-        gap_dots = mm_to_dots(job.label_gap_mm, dpi)
+        width_dots = mm_to_dots(c.label_width_mm, dpi)
+        height_dots = mm_to_dots(c.label_height_mm, dpi)
+        gap_mm = c.label_gap_mm if c.label_gap_mm else job.label_gap_mm
+        gap_dots = mm_to_dots(gap_mm, dpi)
         # REFERENCE 偏移：负值 TSPL 按反向原点处理，原样下发
-        ox = mm_to_dots(job.offset_x_mm, dpi)
-        oy = mm_to_dots(job.offset_y_mm, dpi)
-        bar_h = mm_to_dots(bar_height_mm, dpi)
-        fx = mm_to_dots(origin_x_mm, dpi)
-        fy = mm_to_dots(origin_y_mm, dpi)
+        ox = mm_to_dots(c.offset_x_mm, dpi)
+        oy = mm_to_dots(c.offset_y_mm, dpi)
+        bar_h = mm_to_dots(c.barcode_height_mm, dpi)
+        module_dots = mm_to_dots(resolve_module_mm(job, c), dpi)
+        # 左静区预留为条码原点；顶部默认边距
+        fx = c.quiet_modules * module_dots
+        fy = mm_to_dots(_DEFAULT_TOP_MARGIN_MM, dpi)
+        hr = 1 if c.show_text else 0
 
-        data = str(barcode_data or "")
-        cmd = _BARCODE_COMMANDS.get(barcode_type.upper())
-        if cmd is None:
-            raise PrintError(
-                PrintError.INVALID_JOB,
-                f"TSPL 适配器不支持的条码类型: {barcode_type!r}",
-                resolution="当前支持 CODE128 / EAN13",
+        blocks: list[str] = []
+        for value, btype in expand_label_instances(c):
+            cmd = _BARCODE_COMMANDS.get(btype.upper())
+            if cmd is None:
+                raise PrintError(
+                    PrintError.INVALID_JOB,
+                    f"TSPL 适配器不支持的条码类型: {btype!r}",
+                    resolution=f"当前支持 {' / '.join(_SUPPORTED_BARCODES)}",
+                )
+            data = str(value)
+            if cmd == "CODE128":
+                # CODE128 x,y,"data",height,human_readable,rotation,
+                #          narrow,wide,mode,checkdigit
+                barcode_line = (
+                    f'CODE128 {fx},{fy},"{data}",{bar_h},{hr},0,2,2,48,0'
+                )
+            else:
+                # EAN13 x,y,"data",height,human_readable,rotation,
+                #       narrow,wide,checkdigit
+                barcode_line = (
+                    f'EAN13 {fx},{fy},"{data}",{bar_h},{hr},0,2,2,0'
+                )
+            blocks.append(
+                "\r\n".join([
+                    f"SIZE {width_dots} dots, {height_dots} dots",
+                    f"GAP {gap_dots} dots, 0",
+                    f"DENSITY {dpi}",
+                    "DIRECTION 1,0",
+                    f"REFERENCE {ox},{oy}",
+                    "CLS",
+                    barcode_line,
+                    f"PRINT {job.copies}",
+                    "EOP",
+                ])
             )
-
-        if cmd == "CODE128":
-            # CODE128 x,y,"data",height,human_readable,rotation,
-            #          narrow,wide,mode,checkdigit
-            barcode_line = (
-                f'CODE128 {fx},{fy},"{data}",{bar_h},1,0,2,2,48,0'
-            )
-        else:
-            # EAN13 x,y,"data",height,human_readable,rotation,
-            #       narrow,wide,checkdigit
-            barcode_line = (
-                f'EAN13 {fx},{fy},"{data}",{bar_h},1,0,2,2,0'
-            )
-
-        lines = [
-            f"SIZE {width_dots} dots, {height_dots} dots",
-            f"GAP {gap_dots} dots, 0",
-            f"DENSITY {dpi}",
-            "DIRECTION 1,0",
-            f"REFERENCE {ox},{oy}",
-            "CLS",
-            barcode_line,
-            f"PRINT {job.copies}",
-            "EOP",
-        ]
-        return ("\r\n".join(lines) + "\r\n").encode("latin-1")
+        return ("\r\n".join(blocks) + "\r\n").encode("latin-1")
 
     # ---- 执行 ----
     def submit(self, job: LabelJobSpec) -> PrintResult:
@@ -126,14 +188,7 @@ class TSPLAdapter(BasePrinterAdapter):
 
         channel = self._channel
         if channel is None:
-            try:
-                channel = build_channel(self._capabilities)
-            except PrintError:
-                raise PrintError(
-                    PrintError.UNSUPPORTED_PLATFORM,
-                    "无可用传输通道（非 Windows 或设备连接方式不受支持）",
-                    resolution="网络 9100 通道可跨平台；本机队列/USB/蓝牙需 Windows",
-                ) from None
+            channel = build_channel(self._capabilities)
 
         payload = self.build_payload(job)
         try:
@@ -148,9 +203,16 @@ class TSPLAdapter(BasePrinterAdapter):
                 "发送 TSPL 指令到设备失败",
                 cause=exc,
             ) from exc
+
+        if channel.kind == "tcp":
+            return PrintResult.sent(
+                self.printer_name,
+                "TSPL 指令已发送至设备（设备无确认回执，"
+                "不代表物理打印完成，请查看打印机实际输出）。",
+            )
         return PrintResult.queued(
             self.printer_name, None,
-            "TSPL 指令已发送至设备（设备无 ACK，按已提交处理，"
+            "TSPL 指令已提交到队列（提交成功不代表物理打印完成，"
             "请查看打印机实际输出）。",
         )
 

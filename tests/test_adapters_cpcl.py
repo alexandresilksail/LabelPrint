@@ -1,6 +1,7 @@
 """CPCL 适配器测试：golden 字节、mm↔dots 边界、统一校验全覆盖。
 
-不依赖 A 切片；submit 在 Linux 仅断言 UNSUPPORTED_PLATFORM 分支。
+内容模型走冻结接口 ``build_payload(job, *, content=None)``；不依赖 A 切片；
+submit 在 Linux 仅断言 UNSUPPORTED_PLATFORM 分支。
 """
 
 import pytest
@@ -11,7 +12,7 @@ from client.printing.capabilities import (
     PaperSize, PrinterCapabilities, Protocol, Transport,
 )
 from client.printing.errors import PrintError
-from client.printing.job import LabelJobSpec
+from client.printing.job import LabelContent, LabelJobSpec
 
 
 def make_caps(**over):
@@ -20,35 +21,51 @@ def make_caps(**over):
         transport=Transport.LOCAL,
         protocol=Protocol.CPCL,
         dpi=203,
-        supported_papers=(PaperSize("50x30", 50.0, 30.0),),
-        max_printable_width_mm=100.0,
-        max_printable_height_mm=100.0,
+        supported_papers=(PaperSize("100x60", 100.0, 60.0),),
+        max_printable_width_mm=200.0,
+        max_printable_height_mm=200.0,
     )
     base.update(over)
     return PrinterCapabilities(**base)
 
 
+def make_content(**over):
+    base = dict(
+        items=[("123456789012", "CODE128")],
+        template_copies=1,
+        label_width_mm=100.0,
+        label_height_mm=60.0,
+        barcode_height_mm=15.0,
+        show_text=True,
+        module_mm=0.33,
+        quiet_modules=11,
+        label_gap_mm=2.0,
+    )
+    base.update(over)
+    return LabelContent(**base)
+
+
 def valid_job(**over):
     base = dict(
-        paper=PaperSize("50x30", 50.0, 30.0),
+        paper=PaperSize("100x60", 100.0, 60.0),
         copies=1, dpi=203, module_mm=0.33,
+        label_content=make_content(),
     )
     base.update(over)
     return LabelJobSpec(**base)
 
 
 # ---------------------------------------------------------------------------
-# golden
+# golden（100x60mm @203dpi）
 # ---------------------------------------------------------------------------
 
 def test_golden_code128():
     adapter = CPCLAdapter(make_caps())
-    payload = adapter.build_payload(
-        valid_job(), barcode_data="123456789012", barcode_type="CODE128")
+    payload = adapter.build_payload(valid_job())
     assert payload == (
-        b"! 0 203 203 240 1\r\n"
-        b"PAGE-WIDTH 400\r\n"
-        b"BARCODE CODE128 24 24 120 123456789012\r\n"
+        b"! 0 203 203 480 1\r\n"
+        b"PAGE-WIDTH 799\r\n"
+        b"BARCODE CODE128 33 24 120 123456789012\r\n"
         b"FORM\r\n"
         b"PRINT 1\r\n"
     )
@@ -56,12 +73,13 @@ def test_golden_code128():
 
 def test_golden_ean13():
     adapter = CPCLAdapter(make_caps())
-    payload = adapter.build_payload(
-        valid_job(), barcode_data="5901234123457", barcode_type="EAN13")
+    job = valid_job(label_content=make_content(
+        items=[("5901234123457", "EAN13")]))
+    payload = adapter.build_payload(job)
     assert payload == (
-        b"! 0 203 203 240 1\r\n"
-        b"PAGE-WIDTH 400\r\n"
-        b"BARCODE EAN13 24 24 120 5901234123457\r\n"
+        b"! 0 203 203 480 1\r\n"
+        b"PAGE-WIDTH 799\r\n"
+        b"BARCODE EAN13 33 24 120 5901234123457\r\n"
         b"FORM\r\n"
         b"PRINT 1\r\n"
     )
@@ -69,10 +87,10 @@ def test_golden_ean13():
 
 def test_offset_shifts_origin_in_cpcl():
     adapter = CPCLAdapter(make_caps())
-    job = valid_job(offset_x_mm=2.54)  # ≈20 dots @203dpi
-    payload = adapter.build_payload(job, barcode_data="123456789012")
-    # fx = 24 + 20 = 44
-    assert b"BARCODE CODE128 44 24 120" in payload
+    job = valid_job(label_content=make_content(offset_x_mm=2.54))  # ≈20 dots
+    payload = adapter.build_payload(job)
+    # fx = 33（静区预留）+ 20（偏移）= 53
+    assert b"BARCODE CODE128 53 24 120 123456789012" in payload
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +99,8 @@ def test_offset_shifts_origin_in_cpcl():
 
 def test_mm_to_dots_boundaries():
     assert mm_to_dots(25.4, 203) == 203
-    assert mm_to_dots(50.0, 203) == 400
-    assert mm_to_dots(30.0, 203) == 240
+    assert mm_to_dots(100.0, 203) == 799
+    assert mm_to_dots(60.0, 203) == 480
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +128,7 @@ def test_paper_not_supported_is_error():
 
 
 def test_paper_out_of_printable_area():
-    job = valid_job(paper=PaperSize("big", 200.0, 100.0))
+    job = valid_job(paper=PaperSize("big", 300.0, 100.0))
     issues = CPCLAdapter(make_caps()).validate_job(job)
     assert ("error", PrintError.PAPER_OUT_OF_RANGE) in issue_codes(issues)
 

@@ -14,17 +14,25 @@ import pytest
 
 from client.printing.capabilities import (
     DriverInfo, JobOrientation, PaperSize, PrintQuality, PrinterCapabilities,
-    PrinterStatus, Transport,
+    PrinterStatus, Protocol, Transport,
 )
-from client.printing.job import LabelJobSpec, ValidationIssue
+from client.printing.errors import PrintError
+from client.printing.job import LabelContent, LabelJobSpec, ValidationIssue
 from client.ui.pages.print_export_logic import (
     build_job_from_form,
+    build_label_content,
+    classify_paper,
+    effective_capabilities,
     group_issues,
     merge_capabilities,
     merge_capabilities_list,
+    mode_basis_text,
+    paper_conversion_prompt,
     pick_paper,
     paper_choice_note,
+    resolve_paper_choice,
     summarize_capabilities,
+    transport_honesty,
 )
 
 
@@ -249,3 +257,221 @@ class TestSummaryAndGroup:
 
     def test_group_issues_empty(self):
         assert group_issues([]) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# 纸张一致性决策（三态：match / needs_confirm / abort）
+# ---------------------------------------------------------------------------
+def _tpl_ns(**over):
+    base = dict(
+        template_name="40x25 模板", paper_width=40.0, paper_height=25.0,
+        label_width=40.0, label_height=25.0, barcode_height=15.0,
+        show_text=True, copies=2, offset_x=0.0, offset_y=0.0,
+    )
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+class TestPaperDecision:
+    def test_equal_sizes_classify_match(self):
+        tpl = _tpl_ns()
+        sel = PaperSize("40x25", 40.0, 25.0)
+        assert classify_paper(tpl, sel) == "match"
+        plan = resolve_paper_choice(tpl, sel, None)
+        assert plan["state"] == "match"
+        assert plan["allow_paper_conversion"] is False
+
+    def test_different_sizes_need_confirm(self):
+        tpl = _tpl_ns()
+        sel = PaperSize("A4", 210.0, 297.0)
+        assert classify_paper(tpl, sel) == "needs_confirm"
+        plan = resolve_paper_choice(tpl, sel, None)
+        assert plan["state"] == "needs_confirm"
+        assert plan["paper"] is None
+        # 提示文案含两边尺寸，且明确不静默裁切
+        msg = paper_conversion_prompt(tpl, sel)
+        assert "40x25" in msg or "40×25" in msg or "40" in msg
+        assert "210" in msg
+        assert "静默" in msg
+
+    def test_confirm_use_selected_allows_conversion(self):
+        tpl = _tpl_ns()
+        sel = PaperSize("A4", 210.0, 297.0)
+        plan = resolve_paper_choice(tpl, sel, "use_selected")
+        assert plan["state"] == "convert"
+        assert plan["allow_paper_conversion"] is True
+        assert plan["paper"] is sel
+
+    def test_choose_template_paper_returns_match(self):
+        tpl = _tpl_ns()
+        sel = PaperSize("A4", 210.0, 297.0)
+        plan = resolve_paper_choice(tpl, sel, "use_template")
+        assert plan["state"] == "match"
+        assert plan["allow_paper_conversion"] is False
+        assert plan["paper"].width_mm == pytest.approx(40.0)
+
+    def test_reject_aborts(self):
+        tpl = _tpl_ns()
+        sel = PaperSize("A4", 210.0, 297.0)
+        plan = resolve_paper_choice(tpl, sel, "abort")
+        assert plan["state"] == "abort"
+        assert plan["paper"] is None
+        assert plan["allow_paper_conversion"] is False
+
+
+# ---------------------------------------------------------------------------
+# label_content 构建 / 份数语义 / allow_paper_conversion 贯通
+# ---------------------------------------------------------------------------
+class TestLabelContentAndCopies:
+    def _caps(self):
+        return _win32_entry(dpi=203)
+
+    def test_label_content_built_from_raw_items_not_expanded(self):
+        tpl = _tpl_ns(copies=2)
+        items = [("123456789012", "EAN13"), ("ABC123XYZ", "CODE128")]
+        job = build_job_from_form(
+            tpl, self._caps(),
+            {"paper": PaperSize("L", 40.0, 25.0), "copies": 3},
+            items=items, template=tpl)
+        c = job.label_content
+        assert isinstance(c, LabelContent)
+        # items 未按模板份数展开：仍是原始 2 条
+        assert c.items == items
+        assert len(c.items) == 2
+        # 模板份数单独记录，由适配器唯一展开
+        assert c.template_copies == 2
+        # 标签/纸张尺寸、条码高度、show_text 来自模板
+        assert c.label_width_mm == pytest.approx(40.0)
+        assert c.label_height_mm == pytest.approx(25.0)
+        assert c.paper_width_mm == pytest.approx(40.0)
+        assert c.barcode_height_mm == pytest.approx(15.0)
+        assert c.show_text is True
+        # 静区模块数 / 模块宽度
+        assert c.quiet_modules == 11
+        assert c.module_mm == pytest.approx(0.33)
+
+    def test_job_copies_not_duplicated_in_label_content(self):
+        tpl = _tpl_ns(copies=2)
+        items = [("123456789012", "EAN13")]
+        job = build_job_from_form(
+            tpl, self._caps(),
+            {"paper": PaperSize("L", 40.0, 25.0), "copies": 5},
+            items=items, template=tpl)
+        # 任务份数 = 表单份数，唯一位于 job.copies
+        assert job.copies == 5
+        # 内容模型不含任务份数字段，不重复放大
+        assert not hasattr(job.label_content, "copies")
+        assert job.label_content.template_copies == 2
+        assert len(job.label_content.items) == 1
+
+    def test_offsets_gap_flow_into_content(self):
+        tpl = _tpl_ns()
+        items = [("123456789012", "EAN13")]
+        job = build_job_from_form(
+            tpl, self._caps(),
+            {"paper": PaperSize("L", 40.0, 25.0),
+             "offset_x_mm": 1.5, "offset_y_mm": -2.0,
+             "label_gap_mm": 2.5, "module_mm": 0.3},
+            items=items, template=tpl)
+        c = job.label_content
+        assert c.offset_x_mm == pytest.approx(1.5)
+        assert c.offset_y_mm == pytest.approx(-2.0)
+        assert c.label_gap_mm == pytest.approx(2.5)
+        assert c.module_mm == pytest.approx(0.3)
+
+    def test_allow_paper_conversion_passthrough(self):
+        tpl = _tpl_ns()
+        base = {"paper": PaperSize("L", 40.0, 25.0)}
+        off = build_job_from_form(tpl, self._caps(), dict(base))
+        assert off.allow_paper_conversion is False
+        on = build_job_from_form(
+            tpl, self._caps(), {**base, "allow_paper_conversion": True})
+        assert on.allow_paper_conversion is True
+
+    def test_no_items_template_means_no_label_content(self):
+        job = build_job_from_form(None, self._caps(), {})
+        assert job.label_content is None
+
+    def test_build_label_content_direct(self):
+        tpl = _tpl_ns(copies=3)
+        c = build_label_content(
+            [("v", "CODE128")], tpl,
+            {"paper": PaperSize("L", 40.0, 25.0), "label_gap_mm": 1.0})
+        assert c.template_copies == 3
+        assert c.items == [("v", "CODE128")]
+        assert c.label_gap_mm == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# 打印方式 / 通道诚信：只按显式选择，USB/蓝牙/LPR 未集成禁用
+# ---------------------------------------------------------------------------
+class TestModeAndTransport:
+    def _caps(self, **over):
+        base = dict(printer_name="P", dpi=203,
+                    supported_papers=(PaperSize("L", 40.0, 25.0),))
+        base.update(over)
+        return PrinterCapabilities(**base)
+
+    def test_usb_transport_not_integrated_disabled(self):
+        caps = self._caps(transport=Transport.USB, port_name="USB001")
+        enabled, text = transport_honesty(caps)
+        assert enabled is False
+        assert "未集成" in text
+
+    def test_bluetooth_not_integrated_disabled(self):
+        caps = self._caps(transport=Transport.BLUETOOTH, port_name="BT001")
+        enabled, text = transport_honesty(caps)
+        assert enabled is False
+        assert "未集成" in text
+
+    def test_lpr_not_integrated_disabled(self):
+        caps = self._caps(transport=Transport.NETWORK,
+                          port_name="lpr://192.168.1.20:515")
+        enabled, text = transport_honesty(caps)
+        assert enabled is False
+        assert "LPR" in text
+
+    def test_network_tcp_enabled_with_honest_warning(self):
+        caps = self._caps(transport=Transport.NETWORK,
+                           port_name="192.168.1.20:9100")
+        enabled, text = transport_honesty(caps)
+        assert enabled is True
+        assert "9100" in text
+        assert "不代表物理打印完成" in text
+
+    def test_local_queue_enabled(self):
+        caps = self._caps(transport=Transport.LOCAL, port_name="LPT1")
+        enabled, text = transport_honesty(caps)
+        assert enabled is True
+        assert "队列" in text
+
+    def test_effective_capabilities_protocol_from_explicit_choice(self):
+        caps = self._caps(protocol=Protocol.UNIVERSAL)
+        eff = effective_capabilities(caps, "zpl")
+        assert eff.protocol == Protocol.ZPL
+        # 原始能力不被改写
+        assert caps.protocol == Protocol.UNIVERSAL
+
+    def test_tcp9100_requires_host(self):
+        caps = self._caps(transport=Transport.LOCAL)
+        with pytest.raises(PrintError):
+            effective_capabilities(caps, "tcp9100", sub_protocol="zpl",
+                                   host_port="")
+
+    def test_tcp9100_sets_network_and_protocol(self):
+        caps = self._caps(transport=Transport.LOCAL, port_name="LPT1")
+        eff = effective_capabilities(caps, "tcp9100", sub_protocol="tspl",
+                                     host_port="10.0.0.5:9100")
+        assert eff.transport == Transport.NETWORK
+        assert eff.protocol == Protocol.TSPL
+        assert eff.port_name == "10.0.0.5:9100"
+
+    def test_universal_mode_returns_unchanged(self):
+        caps = self._caps(transport=Transport.LOCAL)
+        assert effective_capabilities(caps, "universal") is caps
+
+    def test_mode_basis_never_brand_based(self):
+        caps = self._caps(verified_with_hardware=False)
+        text = mode_basis_text(caps, "zpl")
+        assert "用户显式选择" in text
+        assert "未" in text  # 未实测声明

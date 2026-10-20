@@ -45,9 +45,15 @@ class LabelJobSpec:
     module_mm: float | None = None
     scale_tolerance_mm: float = 0.5
     preview_image_path: str | None = None   # 打印预览渲染图（可选）
+    #: 专用协议打印的内容模型（ZPL/TSPL/CPCL 适配器据此构建完整指令）
+    label_content: "LabelContent | None" = None
+    #: 用户已确认的纸张转换许可：仅当 UI 明确提示并获得确认后置 True，
+    #: 允许 PDF 以自身实际尺寸（而非目标纸张）输出；否则尺寸不一致直接报错
+    allow_paper_conversion: bool = False
 
     def has_content(self) -> bool:
-        return bool(self.pdf_path) or bool(self.raw_payload)
+        return bool(self.pdf_path) or bool(self.raw_payload) or \
+            bool(self.label_content)
 
     def describe(self) -> str:
         if self.paper:
@@ -56,8 +62,34 @@ class LabelJobSpec:
         return f"×{self.copies}份"
 
 
+@dataclass
+class LabelContent:
+    """专用协议打印的完整标签内容模型（与 PDF 路径共用同一份数据语义）。
+
+    - ``items``：原始编码列表 [(值, 条码类型)]，**未按模板份数展开**；
+      展开只由协议适配器执行一次（``template_copies``）。
+    - 偏移/静区/模块宽度来自校准配置，必须实际进入指令（^LH/^BY/GAP/REFERENCE）。
+    - ``job_copies`` 不在此重复：任务份数统一取自 ``LabelJobSpec.copies``。
+    """
+
+    items: list[tuple[str, str]] = field(default_factory=list)
+    template_copies: int = 1
+    label_width_mm: float = 40.0
+    label_height_mm: float = 25.0
+    paper_width_mm: float = 40.0
+    paper_height_mm: float = 25.0
+    barcode_height_mm: float = 15.0
+    show_text: bool = True
+    offset_x_mm: float = 0.0
+    offset_y_mm: float = 0.0
+    module_mm: float | None = None
+    quiet_modules: int = 11
+    label_gap_mm: float = 0.0
+
+
 class JobOutcome(str, Enum):
     QUEUED = "queued"                      # 已提交到 Windows 打印队列
+    SENT = "sent"                          # 直接通道（TCP 等）已发送，无设备确认
     PHYSICALLY_PRINTED = "physically_printed"  # 设备明确回报已打印
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -76,7 +108,8 @@ class PrintResult:
 
     @property
     def succeeded(self) -> bool:
-        return self.outcome in (JobOutcome.QUEUED, JobOutcome.PHYSICALLY_PRINTED)
+        return self.outcome in (
+            JobOutcome.QUEUED, JobOutcome.SENT, JobOutcome.PHYSICALLY_PRINTED)
 
     @classmethod
     def queued(cls, printer_name: str, job_id: int | None,
@@ -86,6 +119,15 @@ class PrintResult:
                         + "。提交成功不代表物理打印完成，请查看打印机输出。")
         return cls(outcome=JobOutcome.QUEUED, printer_name=printer_name,
                    message=m, job_id=job_id)
+
+    @classmethod
+    def sent(cls, printer_name: str, message: str | None = None) -> "PrintResult":
+        """直接通道（TCP 9100 等）已发送到设备。无设备确认，
+        绝不表述为物理打印成功。"""
+        m = message or (
+            f"指令已发送至设备：{printer_name}（设备无确认回执，"
+            "不代表物理打印完成，请查看打印机实际输出）。")
+        return cls(outcome=JobOutcome.SENT, printer_name=printer_name, message=m)
 
     @classmethod
     def failed(cls, printer_name: str, error: PrintError) -> "PrintResult":
