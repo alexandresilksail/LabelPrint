@@ -7,6 +7,16 @@
 
 ``orient_paper`` 统一横向/纵向处理：方向语义在进入渲染/后端前
 先归一为物理尺寸（横向 = 宽 ≥ 高），避免 Qt/驱动重复换向。
+
+# 静区（quiet zone）与标签间隙（label gap）语义严禁混用（冻结）：
+- **静区 quiet zone**：条码左右（及上下）两侧的空白**识读保护带**，属于条码
+  图形本身的一部分，UI/配置层以**毫米**保存（``quiet_zone_mm``），渲染/编码层
+  以**模块数**（quiet modules）工作；两者唯一换算入口为本模块
+  :func:`quiet_zone_mm_to_modules` / :func:`quiet_modules_to_mm`。
+- **标签间隙 label_gap_mm**：标签纸相邻两张标签之间的**物理介质间隙**
+  （走纸/定位用，仅专用协议 TSPL GAP、ZPL 传感等与设备硬件参数相关），
+  **严禁**把它加进条码静区或条码内容布局；PDF 渲染器与
+  :mod:`client.printing.preview` 的 ``fit_barcode`` 都不接受该参数。
 """
 
 from __future__ import annotations
@@ -16,6 +26,10 @@ from .capabilities import JobOrientation, PaperSize
 MM_PER_INCH = 25.4
 PT_PER_INCH = 72.0
 DEFAULT_TOLERANCE_MM = 0.5
+
+#: GS1 默认每侧静区模块数（与 pdf.DEFAULT_QUIET_MODULES /
+#: calibration.DEFAULT_QUIET_MODULES 一致）
+GS1_DEFAULT_QUIET_MODULES = 11
 
 
 def mm_to_pt(mm: float) -> float:
@@ -69,3 +83,42 @@ def orient_paper(paper: PaperSize,
         if w > h:
             return PaperSize(paper.name, h, w)
     return paper
+
+
+# ---------------------------------------------------------------------------
+# 静区：毫米（UI/配置层）↔ 模块数（渲染/编码层）唯一换算入口
+#
+# 注意：这里只换算"条码静区"。标签物理间隙 ``label_gap_mm`` 是走纸/定位的
+# 硬件介质参数，不属于条码图形，禁止经由本函数换算或叠加进静区。
+# ---------------------------------------------------------------------------
+def quiet_zone_mm_to_modules(quiet_zone_mm: float, module_mm: float) -> int:
+    """毫米静区宽度 → 静区模块数（每侧）。唯一换算入口。
+
+    公式：``round(quiet_zone_mm / module_mm)``，结果 ≥ 0。
+
+    - ``quiet_zone_mm``：用户配置的每侧静区物理宽度（mm，非负）；
+    - ``module_mm``：当前条码模块宽度（mm，**必须为正数**）。
+
+    非法输入显式抛 ``ValueError``（绝不静默回退成错误静区）：
+    ``module_mm`` 非正、``quiet_zone_mm`` 为 None 或负数。
+    """
+    if module_mm is None or module_mm <= 0:
+        raise ValueError(
+            f"非法模块宽度: {module_mm!r}（静区换算要求正数 mm）")
+    if quiet_zone_mm is None or quiet_zone_mm < 0:
+        raise ValueError(
+            f"非法静区宽度: {quiet_zone_mm!r}（静区必须为非负 mm）")
+    return max(0, int(round(quiet_zone_mm / module_mm)))
+
+
+def quiet_modules_to_mm(modules: int, module_mm: float) -> float:
+    """静区模块数 → 毫米（与 :func:`quiet_zone_mm_to_modules` 互逆）。
+
+    ``module_mm`` 非正 → ``ValueError``；``modules`` 为负 → ``ValueError``。
+    """
+    if module_mm is None or module_mm <= 0:
+        raise ValueError(
+            f"非法模块宽度: {module_mm!r}（静区换算要求正数 mm）")
+    if modules < 0:
+        raise ValueError(f"静区模块数不能为负: {modules!r}")
+    return modules * module_mm

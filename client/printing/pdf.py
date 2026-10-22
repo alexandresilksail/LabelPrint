@@ -11,8 +11,8 @@ from ..barcode.encoder import encode_with_quiet_zone, module_count
 from ..barcode.renderer import _text_groups
 from .capabilities import JobOrientation, PaperSize
 from .preview import fit_barcode
-from .templates import LabelTemplate
-from .units import orient_paper
+from .templates import GS1_MODULE_MM, LabelTemplate
+from .units import orient_paper, quiet_zone_mm_to_modules
 
 try:
     from reportlab.lib.units import mm
@@ -22,6 +22,55 @@ except ImportError as exc:  # pragma: no cover
 
 DEFAULT_QUIET_MODULES = 11
 MAX_SHEET_PAGES = 100        # 单次生成安全页数上限，超出部分报 dropped
+
+#: 硬件参数（走纸/间隙传感/打印浓度）不由软件直接控制的统一标注
+HARDWARE_NOT_CONTROLLED = "不由软件直接控制（打印机硬件/驱动面板参数）"
+
+#: 已知硬件参数键 → 中文参数名（软件无法直接控制，仅如实登记未应用）
+_HARDWARE_LABELS = {
+    "feed_mm": "走纸长度（进纸）",
+    "feed_length_mm": "走纸长度（进纸）",
+    "gap_sensor": "间隙传感模式",
+    "gap_sensor_mode": "间隙传感模式",
+    "print_darkness": "打印浓度（温度/黑度）",
+    "darkness": "打印浓度（温度/黑度）",
+}
+
+#: 标签物理间隙的 meta 备注（证明它未进入条码布局）
+LABEL_GAP_NOTE = ("标签物理间隙（走纸/定位用，仅专用协议与设备硬件相关），"
+                  "未参与条码静区或条码内容布局")
+
+
+def _resolve_quiet_modules(quiet_zone_mm, quiet, module_for_conversion):
+    """静区模块数解析（优先级冻结）：
+
+    1. ``quiet_zone_mm``（毫米，用户配置）→ 经 units 换算为模块数；
+    2. 否则用 ``quiet``（模块数，既有参数）；
+    3. 都未给 → GS1 默认 11 模块。
+
+    ``quiet_zone_mm`` 给出时必须提供正数换算模块宽，否则换算函数显式
+    抛 ``ValueError``，绝不静默丢弃或回退。
+    """
+    if quiet_zone_mm is not None:
+        return quiet_zone_mm_to_modules(quiet_zone_mm, module_for_conversion)
+    if quiet is not None:
+        return int(quiet)
+    return DEFAULT_QUIET_MODULES
+
+
+def _collect_unapplied(hardware_params) -> list[str]:
+    """把渲染器无法应用的硬件参数如实列入 unapplied_params（诚信红线）。
+
+    走纸、间隙传感、打印浓度等软件无法直接控制的参数，逐项标注
+    "不由软件直接控制"，禁止在 UI 显示为"已应用"。
+    """
+    unapplied: list[str] = []
+    if not hardware_params:
+        return unapplied
+    for name, value in hardware_params.items():
+        label = _HARDWARE_LABELS.get(name, name)
+        unapplied.append(f"{label}（{name}={value}）：{HARDWARE_NOT_CONTROLLED}")
+    return unapplied
 
 
 def _draw_barcode(c, value, barcode_type, x_mm, y_mm, *, module_mm, bar_h_mm,
@@ -72,17 +121,35 @@ def render_pdf(value, barcode_type, path, *, module_mm=None, bar_height_mm=15.0,
                show_text=True, quiet=DEFAULT_QUIET_MODULES, margin_mm=5.0,
                offset_x_mm: float | None = None,
                offset_y_mm: float | None = None,
-               target_module_mm: float | None = None):
+               target_module_mm: float | None = None,
+               quiet_zone_mm: float | None = None,
+               module_mm_override: float | None = None,
+               label_gap_mm: float = 0.0,
+               hardware_params: dict | None = None):
     """单个条码 PDF。页面尺寸 = 内容物理尺寸 + 边距。返回 meta dict。
 
     可选校准参数（默认 None，保持向后兼容）：
     - offset_x_mm/offset_y_mm：整体平移条码绘制原点（mm；y 向下为正）。
-    - target_module_mm：目标模块宽度；未显式给出 ``module_mm`` 时采用。
+    - target_module_mm / module_mm_override：目标模块宽度（后者为别名）；
+      未显式给出 ``module_mm`` 时采用。
     - quiet：静区模块数，进入编码（encode_with_quiet_zone）。
+    - quiet_zone_mm：静区物理宽度（mm，用户配置）。优先级高于 ``quiet``：
+      给出时经 units 换算为模块数再进入编码；换算模块宽取已解析的
+      ``module_mm``/``target_module_mm``，缺省用 GS1 标称 0.33mm。
+    - label_gap_mm：标签物理间隙（走纸/定位硬件参数），仅原样记录到
+      ``label_gap_mm_passthrough``，**不参与**条码静区或内容布局。
+    - hardware_params：软件无法控制的硬件参数（走纸/间隙传感/打印浓度），
+      逐项进入 ``unapplied_params`` 并标注"不由软件直接控制"，禁止静默丢弃。
     """
-    total = module_count(barcode_type) + 2 * quiet
+    # 模块宽解析：显式 module_mm > module_mm_override > target_module_mm > 0.33
     if module_mm is None:
-        module_mm = target_module_mm if target_module_mm is not None else 0.33
+        module_mm = (module_mm_override if module_mm_override is not None
+                    else target_module_mm)
+    if module_mm is None:
+        module_mm = GS1_MODULE_MM
+
+    quiet_modules = _resolve_quiet_modules(quiet_zone_mm, quiet, module_mm)
+    total = module_count(barcode_type) + 2 * quiet_modules
     barcode_w = total * module_mm
     text_h = 4.0 if show_text else 0.0
     page_w = barcode_w + 2 * margin_mm
@@ -96,7 +163,7 @@ def render_pdf(value, barcode_type, path, *, module_mm=None, bar_height_mm=15.0,
     _draw_barcode(
         c, value, barcode_type, margin_mm + ox, page_h - margin_mm - oy,
         module_mm=module_mm, bar_h_mm=bar_height_mm,
-        show_text=show_text, quiet=quiet,
+        show_text=show_text, quiet=quiet_modules,
     )
     c.showPage()
     c.save()
@@ -106,10 +173,16 @@ def render_pdf(value, barcode_type, path, *, module_mm=None, bar_height_mm=15.0,
         "page_width_mm": page_w,
         "page_height_mm": page_h,
         "module_mm": module_mm,
+        "module_mm_applied": module_mm,
         "bar_height_mm": bar_height_mm,
         "offset_x_mm": ox,
         "offset_y_mm": oy,
-        "quiet": quiet,
+        "quiet": quiet_modules,
+        "quiet_modules_applied": quiet_modules,
+        "quiet_zone_mm_applied": quiet_modules * module_mm,
+        "label_gap_mm_passthrough": float(label_gap_mm or 0.0),
+        "label_gap_mm_note": LABEL_GAP_NOTE,
+        "unapplied_params": _collect_unapplied(hardware_params),
         "path": str(path),
     }
 
@@ -121,7 +194,11 @@ def render_label_sheet_pdf(items, template, path, *,
                            offset_y_mm: float | None = None,
                            target_module_mm: float | None = None,
                            paper_override: PaperSize | None = None,
-                           orientation_override: JobOrientation | None = None
+                           orientation_override: JobOrientation | None = None,
+                           quiet_zone_mm: float | None = None,
+                           module_mm_override: float | None = None,
+                           label_gap_mm: float = 0.0,
+                           hardware_params: dict | None = None
                            ) -> dict:
     """按标签模板排版 PDF。items: 原始编码 [(value, barcode_type), ...]。
 
@@ -137,8 +214,20 @@ def render_label_sheet_pdf(items, template, path, *,
       的实际绘制坐标（``slot["x_mm"] += 传入增量``）。
     - ``quiet``：静区模块数（来自配置），替换默认 DEFAULT_QUIET_MODULES，同时
       进入 fit_barcode 与编码（encode_with_quiet_zone）。
-    - ``target_module_mm``：校准模块宽度，传给 fit_barcode（等比、不超过标签
-      容量上限）。
+    - ``target_module_mm`` / ``module_mm_override``：校准模块宽度（后者别名），
+      传给 fit_barcode（等比、不超过标签容量上限）。
+    - ``quiet_zone_mm``：静区物理宽度（mm，UI/配置层单位）。与 ``quiet``
+      模块数参数**互斥优先**：给了 ``quiet_zone_mm`` 就经 units 换算为模块数
+      （换算基准 = 已解析目标模块宽；未设置模块宽时先按默认静区 fit 取自由
+      适配模块宽），否则用 ``quiet`` 模块数，再否则默认 11 模块。换算结果同时
+      进入 fit_barcode 与 encode_with_quiet_zone，绝不静默丢弃。
+    - ``label_gap_mm``：标签纸相邻标签的**物理间隙**（走纸/定位，仅专用协议
+      TSPL GAP 等与设备硬件相关）。只原样记入 meta ``label_gap_mm_passthrough``，
+      **严禁**加入条码静区或条码内容布局，本函数不把它传给 fit_barcode/编码。
+    - ``hardware_params``：软件无法直接控制的硬件参数（走纸/间隙传感/打印
+      浓度），逐项进入 meta ``unapplied_params`` 并标注"不由软件直接控制"；
+      任何渲染器不支持/未使用的传入参数都必须在此或 warnings 中明确列出，
+      禁止静默丢弃。
 
     纸张语义：
     - ``paper_override``：用户选择纸张。渲染前用 units.orient_paper（结合
@@ -152,6 +241,15 @@ def render_label_sheet_pdf(items, template, path, *,
     path，另含 template_copies、expanded_total（= len(items)×template_copies）、
     slot_positions（[(row, col, x_mm, y_mm, value)]，x/y 为偏移生效后的实际
     绘制原点）、paper_width_mm/paper_height_mm（实际渲染页面尺寸）。
+
+    配置生效回执（诚信展示，禁止把未应用项标成"已应用"）：
+    - ``quiet_modules_applied``：实际进入编码/fit 的每侧静区模块数；
+    - ``quiet_zone_mm_applied``：实际静区物理宽度（= 模块数 × 实际模块宽）；
+    - ``module_mm_applied``：首个标签实际采用的模块宽度；
+    - ``label_gap_mm_passthrough``：传入的物理间隙原值（未参与条码布局，
+      见 ``label_gap_mm_note``）；
+    - ``unapplied_params``：收集了但渲染器无法应用的参数（当前为走纸/间隙
+      传感/打印浓度等硬件参数），逐项标注"不由软件直接控制"。
     """
     from .preview import compute_layout
 
@@ -227,23 +325,53 @@ def render_label_sheet_pdf(items, template, path, *,
     final_offset_x = template.offset_x + extra_x
     final_offset_y = template.offset_y + extra_y
 
+    # 目标模块宽：module_mm_override 别名优先，其次既有 target_module_mm
+    target_module = (module_mm_override if module_mm_override is not None
+                     else target_module_mm)
+
+    # 硬件参数如实标记为未应用（走纸/间隙传感/打印浓度不由软件直接控制）
+    unapplied_params = _collect_unapplied(hardware_params)
+
     c = rl_canvas.Canvas(
         path, pagesize=(page_w * mm, page_h * mm)
     )
     c.setTitle(f"标签打印 {template.template_name}")
 
     slot_positions = []
+    # 首个标签的实际生效值，写入 meta 作为"配置真实生效"回执
+    applied_quiet_modules: int | None = None
+    applied_module_mm: float | None = None
     for page_idx in range(pages):
         chunk = expanded[page_idx * slots_per_page:(page_idx + 1) * slots_per_page]
         for item, slot in zip(chunk, slots):
             value, barcode_type = item
+            # 静区解析：quiet_zone_mm(mm) > quiet(模块数) > 默认 11。
+            # 给了 mm 但未设模块宽时，先按默认静区 fit 取自由适配模块宽作换算基准。
+            if quiet_zone_mm is not None:
+                conv_module = target_module
+                if conv_module is None:
+                    probe = fit_barcode(
+                        template.label_width, template.label_height, barcode_type,
+                        show_text=template.show_text,
+                        quiet=DEFAULT_QUIET_MODULES,
+                        side_padding=side_padding_mm,
+                    )
+                    conv_module = probe["module_mm"]
+                quiet_modules = quiet_zone_mm_to_modules(quiet_zone_mm,
+                                                        conv_module)
+            else:
+                quiet_modules = int(quiet) if quiet is not None \
+                    else DEFAULT_QUIET_MODULES
             fit = fit_barcode(
                 template.label_width, template.label_height, barcode_type,
-                show_text=template.show_text, quiet=quiet,
+                show_text=template.show_text, quiet=quiet_modules,
                 side_padding=side_padding_mm,
-                target_module_mm=target_module_mm,
+                target_module_mm=target_module,
             )
             module_mm = fit["module_mm"]
+            if applied_quiet_modules is None:
+                applied_quiet_modules = quiet_modules
+                applied_module_mm = module_mm
             bar_h = min(fit["barcode_h_mm"], template.barcode_height)
             # 标签内垂直居中偏上：数字在条码下方
             content_h = bar_h + (font_mm + 0.6 if template.show_text else 0.0)
@@ -255,13 +383,22 @@ def render_label_sheet_pdf(items, template, path, *,
             _draw_barcode(
                 c, value, barcode_type, left_x, top_y,
                 module_mm=module_mm, bar_h_mm=bar_h,
-                show_text=template.show_text, quiet=quiet, font_mm=font_mm,
+                show_text=template.show_text, quiet=quiet_modules,
+                font_mm=font_mm,
             )
             slot_positions.append(
                 (slot["row"], slot["col"], draw_x, draw_y, value)
             )
         c.showPage()
     c.save()
+
+    # 无标签可渲染时回退默认回执，避免 meta 缺键
+    if applied_quiet_modules is None:
+        applied_quiet_modules = int(quiet) if quiet is not None \
+            else DEFAULT_QUIET_MODULES
+    if applied_module_mm is None:
+        applied_module_mm = target_module if target_module is not None \
+            else GS1_MODULE_MM
 
     return {
         "pages": pages,
@@ -277,4 +414,13 @@ def render_label_sheet_pdf(items, template, path, *,
         "paper_height_mm": page_h,
         "offset_x_mm": final_offset_x,
         "offset_y_mm": final_offset_y,
+        # ---- 校准配置真实生效回执 ----
+        "quiet_modules_applied": applied_quiet_modules,
+        "quiet_zone_mm_applied": applied_quiet_modules * applied_module_mm,
+        "module_mm_applied": applied_module_mm,
+        # 物理间隙：仅直通记录，未参与条码布局
+        "label_gap_mm_passthrough": float(label_gap_mm or 0.0),
+        "label_gap_mm_note": LABEL_GAP_NOTE,
+        # 收集了但渲染器无法应用的硬件参数（逐项标注不由软件直接控制）
+        "unapplied_params": unapplied_params,
     }

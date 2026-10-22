@@ -131,7 +131,7 @@ Successful compile (35.000 sec).
 
 ## 7. 1.1.0 构建状态（2026-10-20）
 
-### 7.1 如实声明：1.1.0 安装包未构建
+### 7.1 如实声明：1.1.0 安装包未构建（2026-10-22 复核仍未构建）
 
 - 当前开发环境为 **Linux 沙箱**，**无 Windows、无 Inno Setup 编译器（ISCC.exe）**，
   也无法在 Linux 上运行 PyInstaller 生成 Windows onefile 产物。
@@ -139,6 +139,10 @@ Successful compile (35.000 sec).
   `dist/installer/CodeLabelStudio-Setup-1.1.0.exe` 均尚未构建**，本报告不提供
   1.1.0 的体积、冒烟结果或校验和；**任何 1.1.0 校验和在 Windows 实际构建前都
   不存在，禁止编造**。
+- 2026-10-22 第三轮自动化复测：客户端 711 passed / 2 skipped（EXIT=0）、
+  服务端 167 passed（EXIT=0），仅证明逻辑/守卫在 Linux 通过；**不等于
+  1.1.0 已构建**。完整 Windows 发布门禁手册（含双套件期望退出码、构建、
+  哈希回填、升级/卸载、真机验收空表）见 `docs/PRINTER_TEST_REPORT.md` 2B.7。
 - 当前仅完成：`installer/codelabel.iss` 版本号升至 1.1.0、驱动页文案追加两条，
   以及脚本文本级（grep / begin-end 配对 / 字符串拼接）核对，未执行编译。
 
@@ -150,6 +154,10 @@ Successful compile (35.000 sec).
 REM 1) 安装依赖（含打印子系统新增的 pypdf；pywin32 仅在 win32 安装）
 pip install -r requirements.txt
 
+REM 1.5) 完整自动化测试（期望退出码 0；任一非 0 停止发布）
+python -m pytest tests/ -q            REM 期望 711 passed, 2 skipped
+python -m pytest tests_server/ -q     REM 期望 167 passed, 1 warning
+
 REM 2) PyInstaller onefile + 便携 zip（脚本已固化 spec 与 hiddenimports）
 scripts\build_client.bat
 REM    → 生成 dist\CodeLabelStudio.exe 与 dist\CodeLabelStudio-Portable.zip
@@ -158,6 +166,10 @@ REM 3) 编译 Inno Setup 安装包（需先完成第 2 步）
 "C:\Program Files\Inno Setup 6\ISCC.exe" installer\codelabel.iss
 REM    → 产物 dist\installer\CodeLabelStudio-Setup-1.1.0.exe
 ```
+
+> 环境：Windows 10/11 x64、Python 3.12、Inno Setup 6；完整发布门禁手册
+> （环境准备/测试/构建/哈希回填/升级卸载/真机验收空表）见
+> `docs/PRINTER_TEST_REPORT.md` 2B.7。
 
 ### 7.3 SHA-256 计算命令（Windows 构建后执行，校验和回填到下表）
 
@@ -213,9 +225,11 @@ certutil -hashfile dist\installer\CodeLabelStudio-Setup-1.1.0.exe SHA256
 
 | 项目 | 级别 | 说明 |
 |---|---|---|
-| 打印子系统逻辑（适配器 ZPL/TSPL/CPCL/registry/transports、calibration、config_store、pdf_render、driver_installer 决策与指引） | ① 自动化通过 | Linux 环境 `pytest tests/` 456 passed, 2 skipped（skip 为 Windows 专属用例） |
+| 打印子系统逻辑（适配器 ZPL/TSPL/CPCL/registry/transports、calibration、config_store、pdf_render、driver_installer 决策与指引） | ① 自动化通过 | 2026-10-22 第三轮：`pytest tests/` 711 passed, 2 skipped（EXIT=0）、`pytest tests_server/` 167 passed（EXIT=0）；2 项 skip 为环境/设计原因 |
+| 第三轮修复（P0 RunLater 生命周期 / P1a 静区配置传递与 unapplied / P1b 缩放 block·warn 分级 / P3a 四态与 verified 守卫） | ① 自动化通过 | 新增 4 测试文件 114 项；明细见 PRINTER_TEST_REPORT.md 2B |
+| warn 缩放确认对话框真机交互（取消/继续） | ④ 尚未实测 | 分级逻辑 ① 通过，离屏走默认分支，未在真实桌面点击 |
 | 1.0.0 单文件 exe / 便携包 / 安装包（历史） | ② Windows 构建通过 | 2026-10-18 真实 Windows 构建，属改造前产物，仅供存档 |
-| 1.1.0 安装包 / exe / 便携包 | ④ 尚未实测 | Linux 沙箱无 Windows/ISCC，未构建；脚本仅文本级核对 |
+| 1.1.0 安装包 / exe / 便携包 | ⑤ 尚未实现（未构建）+ ④ 尚未实测 | Linux 沙箱无 Windows/ISCC，未构建；脚本仅文本级核对；步骤见 7.2 与 PRINTER_TEST_REPORT.md 2B.7 |
 | 安装向导新增「打印环境检测」页（Get-Printer 枚举展示） | ④ 尚未实测 | 代码/脚本就绪，未在真实 Windows 桌面走过 |
 | 「打印机驱动（可选）」页文案与 `--printer-setup` 勾选项 | ④ 尚未实测 | 同上，待真实桌面验收 |
 | win32print 队列/驱动枚举、UAC 提权启动、真实驱动安装与刷新复核 | ④ 尚未实测 | 依赖真实 Windows + 真实打印机，Linux 无法验证 |

@@ -1,9 +1,9 @@
 # CodeLabel Studio — 打印机专项测试报告（PRINTER_TEST_REPORT）
 
-> 测试日期：第一轮 2026-10-19（打印机专项首测）；第二轮 2026-10-20（八类缺陷修复与发布验收复测）
-> 执行环境：Linux 沙箱（Python 3.12.11，PySide6 6.12，pytest 8.3.4，pypdf，reportlab；alembic 1.20.0 已装；python-barcode 未装）
+> 测试日期：第一轮 2026-10-19（打印机专项首测）；第二轮 2026-10-20（八类缺陷修复与发布验收复测）；第三轮 2026-10-22（第二轮打印审计修复：P0 线程生命周期 / P1 配置传递与缩放分级 / P3a 协议状态与 verified 守卫 + Windows 发布门禁手册）
+> 执行环境：Linux 沙箱（Python 3.12.11，PySide6 6.12.0，pytest 9.1.1，pypdf 5.9.0，reportlab 4.4.1；alembic 1.20.0 已装；python-barcode 未装）
 > 报告原则：所有数字取自真实命令输出，无据不写；未执行项明写"未实测/未执行"，绝不伪造。
-> 第一轮历史记录（456 passed/2 skipped）完整保留于第 2.1/2.2 节；第二轮以第 2A 章与第 2.3/2.4 节实测为准。
+> 第一轮历史记录（456 passed/2 skipped）完整保留于第 2.1/2.2 节；第二轮（597/167）以第 2A 章与第 2.3/2.4 节为准；**第三轮（711/167，全量退出码 0）以第 2B 章为准**。
 
 ---
 
@@ -29,7 +29,25 @@
 
 ### 1.3 执行命令与原始结论
 
-**第二轮（2026-10-20，缺陷修复复测，本次为准）：**
+**第三轮（2026-10-22，第二轮打印审计修复复测，本次为准）：**
+
+```
+$ QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q
+711 passed, 2 skipped in 3.00s        （客户端，收集 713 项；0 failed 0 error；退出码 EXIT=0）
+
+$ python3 -m pytest tests_server/ -q
+167 passed, 1 warning in 47.37s        （服务端，收集 167 项；0 skipped；退出码 EXIT=0）
+```
+
+- 客户端连续 3 次全量运行均为 `711 passed, 2 skipped` 且 **EXIT=0**；
+  stderr 无 `QThread: Destroyed while thread '' is still running`、无
+  Aborted/Segfault（P0 线程生命周期修复后第二轮的析构终止现象已消除，
+  证据见 2B.1）。
+- 服务端退出码 0，唯一 warning 仍为 starlette `testclient.py` 的 anyio
+  别名 DeprecationWarning（第三方框架，与业务无关）。
+- 2 项跳过与前两轮完全相同（见下表），原因未变。
+
+**第二轮（2026-10-20，缺陷修复复测，历史保留）：**
 
 ```
 $ python3 -m pytest tests/ -q
@@ -84,16 +102,18 @@ Successfully installed Mako-1.4.3 alembic-1.20.0
 
 ## 2. 自动化测试结果总表
 
-### 2.0 两轮合计总表（以第二轮 2026-10-20 实测为准）
+### 2.0 三轮合计总表（以第三轮 2026-10-22 实测为准）
 
-| 范围 | 第一轮 2026-10-19 | 第二轮 2026-10-20 | 两轮关系 |
-|---|---|---|---|
-| 客户端 `tests/` | 456 passed / 2 skipped（收集 458） | **597 passed / 2 skipped（收集 599），0 failed 0 error** | 第二轮净增 141 项 passed；2 项 skip 不变 |
-| 服务端 `tests_server/` | 167 passed / 0 skipped（1 warning） | **167 passed / 0 skipped（1 warning），退出码 0** | 无变动，全量回归通过 |
-| 失败 / 错误 | 0 / 0 | 0 / 0 | — |
+| 范围 | 第一轮 2026-10-19 | 第二轮 2026-10-20 | **第三轮 2026-10-22** | 三轮关系 |
+|---|---|---|---|---|
+| 客户端 `tests/` | 456 passed / 2 skipped（收集 458） | 597 passed / 2 skipped（收集 599），0 failed 0 error | **711 passed / 2 skipped（收集 713），0 failed 0 error，EXIT=0** | 第三轮净增 114 项 passed（4 个新测试文件）；2 项 skip 不变 |
+| 服务端 `tests_server/` | 167 passed / 0 skipped（1 warning） | 167 passed / 0 skipped（1 warning），退出码 0 | **167 passed / 0 skipped（1 warning），EXIT=0** | 三轮无变动，全量回归通过 |
+| 失败 / 错误 | 0 / 0 | 0 / 0 | **0 / 0** | — |
+| 客户端退出码 | 0 | 总结输出后被 Qt offscreen 析构 abort（非失败） | **0（P0 修复后连跑稳定，无 Destroyed/abort）** | 见 2B.1 |
 
 > 第二轮客户端进程在总结输出后被 Qt offscreen 析构终止（非失败，见 1.3 与
-> 第 6 章说明）；逐文件明细见 2.3，第一轮历史明细见 2.1/2.2（原样保留）。
+> 第 6 章说明）；该现象在第三轮 P0 修复后消除。逐文件明细见 2.3（第二轮）
+> 与 2B（第三轮），第一轮历史明细见 2.1/2.2（原样保留）。
 
 ### 2.1 【第一轮历史】客户端 `tests/`（456 passed / 2 skipped / 0 failed / 0 error）
 
@@ -295,6 +315,298 @@ zpl/tspl/cpcl 计数未变仅内容改写）；合计净增 141 项 passed（456
 
 ---
 
+## 2B. 第三轮：第二轮打印审计修复与发布门禁（2026-10-22）
+
+> 本章为第二轮审计（P0 / P1a / P1b / P3a）修复轮的验收记录。修复已全部
+> 落地，自动化复测 **711 passed / 2 skipped（客户端，EXIT=0）+ 167 passed
+> （服务端，EXIT=0）**；硬件、Windows 构建、UAC 等非自动化项**一律未执行/
+> 未实现，按五级标签如实标注**，不把"代码写了/自动化通过"写成"已在真机
+> 验证"，不写入任何虚构哈希或实测结果。
+
+### 2B.1 P0：RunLater 后台线程生命周期重写（`client/ui/widgets.py`）
+
+**根因（第二轮遗留现象）**：裸 `QThread` 启动后进入 `exec()` 事件循环，
+`fn` 执行完线程并不退出，必须等主线程把排队的 done/failed 信号派发出去、
+再由槽调用 `quit()`。当主线程事件循环不再被泵动（自动化测试末尾、应用
+退出前）时，`quit()` 永不被调用，线程停留在 running；解释器/QApplication
+析构时 Qt 强制删除仍在运行的 QThread，触发
+`QThread: Destroyed while thread '' is still running` 并 Aborted/Segfault
+（退出码 134/偶发 139）。即便 `fn` 已完成，未被释放的 QThread 对象连同
+排队信号进入 C++ 析构也会造成 use-after-free。这正是第二轮客户端全量
+pytest 在打印总结行后被析构终止的来源（第二轮已隔离定位但未修）。
+
+**修复（落地事实）**：
+
+1. 重写 `_TaskThread.run()`：`fn` 执行完毕（成功/异常）即发信号并返回，
+   线程自然 `finished`，**不进入 `exec()` 空转循环**，从根上消除"fn 完了
+   线程还活着"；
+2. 模块级注册表（锁保护 `_ACTIVE_TASKS` / `_ALL_TASKS`）持有每条任务：
+   线程**强引用** + 父控件弱引用 + 回调，避免临时 RunLater 对象被 GC 后
+   线程无人回收、重复调用造成线程泄漏；
+3. 同时绑定 `QApplication.aboutToQuit` 与解释器 `atexit`：`shutdown_all()`
+   对所有活跃线程 `requestInterruption + quit + wait(限时 2000ms)`，超时仅
+   告警不阻塞不崩溃；回收时 `_disconnect` 断开信号，杜绝退出后迟到的排队
+   回调触达已析构对象；
+4. 回调经信号自动切回主线程；父控件已销毁（弱引用失效）或已进入退出流程
+   则不再回调；`fn` 异常在 `run()` 的 try/finally 语义下保证发出 failed 并
+   结束线程，回调自身异常被捕获记录，不影响线程收尾。
+
+**证据（第三轮实测）**：
+
+- 客户端全量 `pytest tests/ -q` 连续 3 次均为 `711 passed, 2 skipped`，
+  **EXIT=0**；stderr 无 `QThread: Destroyed`、无 Aborted/Segfault（第二轮
+  的析构终止现象已消除）；
+- 新增 `tests/test_runlater_lifecycle.py`（2 项）：回调完成后任务从活跃集合
+  释放且线程 finished；重复发起多任务各自独立结束、不泄漏活跃线程
+  （不调用 `shutdown_all`，避免置全局退出标志影响同进程其他用例）。
+
+### 2B.2 P1a：配置传递——静区单位转换、间隙语义隔离、unapplied 诚实标记
+
+**修复（落地事实）**：
+
+1. **静区 mm ↔ 模块数唯一换算入口（`client/printing/units.py`）**：
+   `quiet_zone_mm_to_modules(quiet_zone_mm, module_mm) = round(qz_mm /
+   module_mm)` 与互逆的 `quiet_modules_to_mm(modules, module_mm)`；
+   `module_mm` 非正、`quiet_zone_mm` 为 None/负数均**显式抛 ValueError**，
+   绝不静默回退成错误静区。`calibration.check_quiet_zone_mm()` 毫米版本
+   校验先经 units 换算再委托既有 `check_quiet_zone`，既有模块数版本行为
+   不变。
+2. **静区与标签间隙语义隔离（冻结）**：条码**静区 quiet zone**（识读保护带，
+   UI/配置层以 `quiet_zone_mm` 毫米保存，渲染/编码层以模块数工作）与
+   标签纸**物理间隙 `label_gap_mm`**（相邻标签走纸/定位硬件参数，仅专用
+   协议 TSPL GAP 等与设备相关）**严禁混用**：`fit_barcode` 不接受
+   `label_gap_mm`；`render_label_sheet_pdf` 只把间隙原值记入 meta
+   `label_gap_mm_passthrough` + `label_gap_mm_note`，**不加入静区或条码
+   布局**（`gap=3` 与 `gap=0` 渲染几何一致）。
+3. **渲染参数显式化（`pdf.py` meta.unapplied_params）**：
+   `render_label_sheet_pdf` 新增 `quiet_zone_mm` / `label_gap_mm` /
+   `hardware_params` 显式参数，并在 meta 回写配置生效回执：
+   `quiet_modules_applied` / `quiet_zone_mm_applied` / `module_mm_applied`
+   为真实生效值；走纸（feed_mm）、间隙传感（gap_sensor_mode）、打印浓度
+   （print_darkness）等软件无法控制的硬件参数逐项进入 `unapplied_params`
+   并标注"不由软件直接控制"，**禁止静默丢弃、禁止显示"已应用"**。
+4. **`resolve_render_params` / `hardware_controlled_notice`
+  （`print_export_logic.py`，纯函数）**：配置 → 渲染参数映射（静区 mm 换算、
+   module 解析、gap 直通、硬件参数列入 unapplied）；逐项声明"走纸与间隙
+   定位由打印机硬件控制、浓度由驱动/设备面板设置，不由软件直接控制"，
+   设备未声明 `supports_gap_sensor` 时追加"间隙参数仅对支持设备生效"。
+   `print_export.py` 接线：通用路径先 `resolve_render_params(cfg,
+   template, caps)`，再把 `quiet_modules/quiet_zone_mm/target_module_mm/
+   label_gap_mm/hardware_params` 显式传入渲染器。
+
+**证据**：新增 `tests/test_print_config_semantics.py`（29 项，pypdf 实测几何
++ meta 断言；覆盖 mm↔模块换算、非法输入抛错、gap 不进布局、硬件参数如实
+标注、UI dict → build_job_from_form → resolve_render_params →
+render_label_sheet_pdf 全链路），全部 passed。
+
+### 2B.3 P1b：缩放风险严格分级（block / warn + 取消选项）
+
+**诚信核心（`client/printing/scale_policy.py`，纯函数无 Qt/无硬件依赖）**：
+**PDF 页面尺寸正确 ≠ 物理标签输出尺寸正确。** 软件按精确毫米把页面尺寸
+下发给系统队列，但第三方驱动是否再缩放、设备能否按该物理尺寸走纸，软件
+无法控制也无法代为确认。`classify_scale_risk()` 分级互斥主干：
+
+| 条件 | 级别 | 原因码 / 映射码 |
+|---|---|---|
+| 纸张无效（缺尺寸 mm） | **block** | INVALID_PAPER / INVALID_JOB |
+| 尺寸超容差 + `allow_paper_conversion=False` | **block** | PAPER_SIZE_MISMATCH（error 阻止提交，禁止静默拉伸/压缩） |
+| 尺寸超容差 + 用户已确认转换 | **warn** | PAPER_CONVERTED（按 PDF 实际尺寸 1:1，仍附驱动风险提示） |
+| 容差内 + `supports_true_size is True` | **ok** | — |
+| 容差内 + `supports_true_size is False` | **warn** | TRUE_SIZE_NOT_DECLARED / SCALE_MISMATCH |
+| 容差内 + caps 缺失 / `supports_true_size is None` | **warn** | TRUE_SIZE_UNKNOWN / SCALE_MISMATCH（目标物理尺寸无法由软件确认） |
+
+**UI 接线（`print_export.py`）**：
+
+- `ScaleRiskConfirmDialog`：warn 级风险逐条列出原因，提供【取消（中止打印）】
+  与【继续打印】两个选项；**block 级直接 `error` 中止，不进入对话框**；
+  用户取消则释放锁、停止提交，不预览不打印；
+- `_classify_preview_risk()`：预检报告可用时按实测页尺寸分级；预检不可用
+  （模块缺失/未落盘）时**不静默放行**，以纸张自身尺寸兜底，能力未声明/
+  未知 → warn，由确认对话框给取消选项；
+- `adapters/universal.py` 的 `_classify_scale_report` 与 scale_policy 对齐：
+  超容差未许可 → error(block)，已确认转换 → warning(warn)，单轴/局部偏差
+  保持 SCALE_MISMATCH warning；`qt_print.resolve_effective_page` 转换注记
+  补诚信提示"PDF 页面尺寸正确不代表物理标签输出尺寸正确；第三方驱动缩放
+  不受本软件控制，请先以测试页复核"。
+
+**证据**：新增 `tests/test_scale_risk.py`（32 项）：分级矩阵、边界
+（A4 210×297、40×25、57×40、横纵互换、容差 0.1/0.5/2.0、DPI
+203/300/600/None 不改变分级）、universal block→error / warn→warning、
+qt_print 三态保持、任何 message 不得出现"已应用"，全部 passed。
+
+### 2B.4 P3a：协议状态四态区分 + verified 守卫修复
+
+**四态（`job.JobOutcome`，不得拔高）**：
+
+| outcome | 触发条件 | 如实含义 |
+|---|---|---|
+| `QUEUED` | Windows 系统队列提交成功 | 任务进入队列，**不代表物理打印完成** |
+| `SENT` | TCP 9100 等直接通道发送成功（无设备确认回执） | 指令送达设备网络栈，**不等于物理打印完成** |
+| `PHYSICALLY_PRINTED` | 仅当设备/系统提供可验证完成证据 | 当前**无任何通道达到此级**，严禁由 QUEUED/SENT 拔高 |
+| `FAILED` / `CANCELLED` | 失败 / 用户取消 | 携带登记错误码，不吞异常、不改写为成功 |
+
+**verified 守卫修复（`capabilities.from_dict` / `_truthy_verified`）**：
+原 `bool()` 裸转会把非空字符串（"false"、"0"）误当已实测；现仅明确为真
+（`True` / `1` / `"true"` `"1"` `"yes"` `"y"` `"on"`）才置
+`verified_with_hardware=True`；缺省 / None / False / `"false"` / `"0"` /
+`"no"` / `""` 一切未知值一律 **False**。另有源码级守卫：全仓库 `client/`
+不得出现把 `verified_with_hardware` 赋为 True 的字面量。
+
+**证据**：新增 `tests/test_protocol_state_audit.py`（51 项）：四态语义、
+USB/蓝牙 open/write 与 LPR `TRANSPORT_NOT_IMPLEMENTED`、非 Windows
+`UNSUPPORTED_PLATFORM`、verified 严格解析参数化、源码无 True 赋值扫描、
+协议只按显式 `protocol` 分发（不按品牌/驱动名推断）、OSError 映射
+SPOOL_FAILED、不真实发包（只注入 fake channel），全部 passed。
+
+### 2B.5 第三轮新增测试清单（114 项，全部 passed）
+
+| 类型 | 文件 | 收集项 | 结果 | 覆盖点 |
+|---|---|---|---|---|
+| 新增 | `tests/test_runlater_lifecycle.py` | 2 | 2 passed | RunLater 回调释放/线程 finished/多任务不泄漏 |
+| 新增 | `tests/test_print_config_semantics.py` | 29 | 29 passed | 静区 mm↔模块换算、gap 隔离、unapplied、全链路 meta |
+| 新增 | `tests/test_scale_risk.py` | 32 | 32 passed | block/warn/ok 分级矩阵、边界、适配器/qt 对齐、诚信措辞 |
+| 新增 | `tests/test_protocol_state_audit.py` | 51 | 51 passed | 四态语义、未集成通道报错、verified 守卫、协议分发、错误映射 |
+| **合计** | 4 文件 | **114** | **114 passed** | 0 failed / 0 error |
+
+> 第三轮客户端收集 713 = 第二轮 599 + 本轮新增 114；711 passed = 713 −
+> 2 skipped（与前两轮相同的 2 项环境/设计 skip，见 1.3）。
+
+### 2B.6 第三轮五级状态区分表
+
+> 五级定义同 2A.2：① 自动化通过（Linux pytest 已跑过该逻辑）；② Windows
+> 构建通过（真实 Windows 由 PyInstaller/ISCC 产出可分发文件）；③ 真实设备
+> 实测（真实打印机硬件 + 真实桌面交互验证通过并留档）；④ 尚未实测
+> （代码/脚本/指引就绪，目标环境未验证）；⑤ 尚未实现（功能未做或按设计
+> 有意不做）。
+
+| 事项 | 本轮实际级别 | 依据 / 待办 |
+|---|---|---|
+| RunLater 线程生命周期（run 自然结束 + 强引用注册表 + aboutToQuit/atexit 统一 join） | **① 自动化通过** | `test_runlater_lifecycle` 2 项；全量 EXIT=0、无 Destroyed、连跑稳定 |
+| 静区 mm↔模块唯一换算、check_quiet_zone_mm、gap 语义隔离、unapplied 诚实标记、resolve_render_params | **① 自动化通过** | `test_print_config_semantics` 29 项 |
+| scale_policy 分级 block/warn/ok + UI 取消选项 + universal/qt 对齐 | **① 自动化通过** | `test_scale_risk` 32 项；对话框离屏默认继续，真机交互 ④ |
+| 四态 outcome 语义、USB/蓝牙/LPR 未集成报错、verified 严格守卫、协议显式分发 | **① 自动化通过** | `test_protocol_state_audit` 51 项 |
+| warn 确认对话框真实桌面交互（取消/继续点击、阻断行为） | **④ 尚未实测** | 离屏测试走默认分支，未在真实桌面点击 |
+| 真实队列枚举/提交/取消/查询（EnumPrinters/OpenPrinter/SetJob/GetJob） | **④ 尚未实测** | 无 Windows 队列 |
+| 1:1 物理出纸尺寸卡尺复核、驱动是否缩放 | **④ 尚未实测** | 自动化只测 PDF 排版尺寸；PDF 正确 ≠ 物理正确 |
+| ZPL/TSPL2/CPCL 真实设备出纸、TCP 9100 真实连通与出纸 | **④ 尚未实测** | golden/配置校验通过，未连设备 |
+| UAC 提权、驱动安装→刷新闭环、安装器 1.1.0 向导交互 | **④ 尚未实测** | 须先 Windows 构建后人工走 |
+| **1.1.0 Windows 构建（exe/便携包/安装包）** | **⑤ 尚未实现（未构建）+ ④ 尚未实测** | Linux 无 ISCC/PyInstaller win 产物；步骤见 2B.7 与 BUILD_REPORT.md 第 7 节 |
+| **USB 私有直连 / 蓝牙 SPP·BLE / LPR** | **⑤ 尚未实现（按设计未做）** | 一律 `TRANSPORT_NOT_IMPLEMENTED`，不伪装可用 |
+| ③ 真实设备实测 | **本轮 0 项达到** | 无任何型号经真实设备测试 |
+| ② Windows 构建通过 | **本轮 0 项达到** | 1.1.0 未构建 |
+
+### 2B.7 Windows 发布门禁运行手册（精确、可复制执行；本环境未执行）
+
+> 以下步骤**必须在真实 Windows 10/11 x64 机器上由人工执行**；当前 Linux
+> 沙箱无 Windows、无 ISCC.exe、无真实打印机，**全部未执行**。命令逐条
+> 复制即可；任何产出的体积/校验和在实际构建前都不存在，禁止编造回填。
+
+#### a) 环境准备
+
+1. 安装 **Windows 10/11 x64**（`ArchitecturesAllowed=x64compatible`，不支持
+   32 位）；安装 **Python 3.12**（勾选 Add python.exe to PATH）。
+2. 仓库根目录打开命令提示符（CMD）或 PowerShell，安装依赖：
+
+```bat
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+   关键依赖：`PySide6>=6.6.0`、`ReportLab>=4.0.0`、`pypdf>=5.0.0`、
+   `pyinstaller>=6.3.0`；`pywin32>=306` 仅在 win32 安装（`sys_platform
+   == 'win32'` 标记）；测试 `pytest>=8.0.0`。
+3. 构建安装包另需安装 **Inno Setup 6**（默认装到
+   `C:\Program Files\Inno Setup 6\`，提供 `ISCC.exe`）。
+
+#### b) 完整自动化测试（期望退出码 0）
+
+```bat
+python -m pytest tests/ -q
+python -m pytest tests_server/ -q
+```
+
+- 期望：客户端 `711 passed, 2 skipped`（0 failed 0 error，退出码 0）；
+  服务端 `167 passed, 1 warning`（0 skipped，退出码 0）。
+- 2 项 skip：`test_calibration.py:226`（旧缺失分支按设计 skip）、
+  `test_encoder.py:65`（python-barcode 未装，可选第三方交叉验证）。
+- 任一命令退出码非 0 或出现 failed/error，**停止发布**，先修复再复测。
+
+#### c) 构建（PyInstaller 单文件 + 便携 zip → Inno Setup 安装包）
+
+```bat
+REM 1) PyInstaller onefile + 便携 zip（脚本已固化 spec 与 hiddenimports）
+scripts\build_client.bat
+REM    → dist\CodeLabelStudio.exe
+REM    → dist\CodeLabelStudio-Portable.zip
+
+REM 2) 编译 Inno Setup 安装包（须先完成第 1 步）
+"C:\Program Files\Inno Setup 6\ISCC.exe" installer\codelabel.iss
+REM    → dist\installer\CodeLabelStudio-Setup-1.1.0.exe
+```
+
+- 冒烟：双击/命令行启动 `dist\CodeLabelStudio.exe`，确认 7 个页面可打开、
+  首次启动自动建 `data\codelabel.db`、stdout/stderr 无 ImportError/traceback；
+  便携 zip 解压后直接运行同样通过。
+
+#### d) SHA-256 回填（构建后执行；当前为"待计算"，不得编造）
+
+PowerShell（推荐）：
+
+```powershell
+Get-FileHash .\dist\CodeLabelStudio.exe -Algorithm SHA256
+Get-FileHash .\dist\CodeLabelStudio-Portable.zip -Algorithm SHA256
+Get-FileHash .\dist\installer\CodeLabelStudio-Setup-1.1.0.exe -Algorithm SHA256
+```
+
+或 certutil：
+
+```bat
+certutil -hashfile dist\CodeLabelStudio.exe SHA256
+certutil -hashfile dist\CodeLabelStudio-Portable.zip SHA256
+certutil -hashfile dist\installer\CodeLabelStudio-Setup-1.1.0.exe SHA256
+```
+
+把三个哈希逐行回填 `docs/BUILD_REPORT.md` 7.3 表（当前均为
+"待 Windows 构建后计算并回填"）。
+
+#### e) 升级与卸载验证（1.0.0 → 1.1.0 数据保留 / 卸载询问与清理）
+
+1. 在已装 1.0.0（或任意旧版）且有业务数据的机器上运行
+   `CodeLabelStudio-Setup-1.1.0.exe` 覆盖安装：确认数据目录（默认
+   `%LOCALAPPDATA%\CodeLabelStudio\data`）**未被清空**，重启应用数据仍在；
+2. 走完安装向导：核对数据目录页默认值、开始菜单快捷方式、可选桌面图标、
+   「打印环境检测」只读页、「打印机驱动（可选）」页、`--printer-setup` 勾选
+   启动；
+3. 控制面板卸载：弹窗询问是否删除数据目录——选"否"→ 确认数据目录仍在；
+   重装后再卸载选"是"→ 确认数据目录被删除、注册表
+   `HKCU\Software\CodeLabelStudio\DataDir` 清理；
+4. 便携版：解压 zip 直接运行，确认无需安装可用。
+
+#### f) 真实设备人工验收（至少 1 台普通打印机 + 1 台标签打印机）
+
+按 2B.8 空表逐台填写，步骤同第 4.2 节（测试页 → 标尺 → 偏移 → 1:1 核对 →
+静区/模块宽扫码 → 正式打印核对份数/方向 → 取消任务 → 失败/离线演练）。
+**只有真实测试通过的型号才可在 `PRINTER_COMPATIBILITY.md` 标记 L3 已验证。**
+
+### 2B.8 真实设备人工验收记录表（空表模板，待用户填写）
+
+> 每台设备一行，可复制扩展；至少 **1 台普通打印机（激光/喷墨）+ 1 台标签
+> 打印机（直热/热转印）**。任何"未执行"保持空白/未通过，严禁预填通过。
+> 标尺测量：四边留边 mm、5mm 网格格差、100mm 基准尺偏差 mm；结论只许填
+> 通过 / 未通过 / 备注。
+
+| # | 日期 | 打印机完整型号（含硬件版本） | 驱动名称与版本（厂商/Windows Update，签名） | 连接方式（USB/以太网/Wi-Fi/蓝牙/本机队列）及端口/IP | 标签规格 宽×高(mm)/类型/间隙或黑标/碳带 | 标尺测量：四边留边(mm) / 5mm 网格格差 / 100mm 基准偏差(mm) | 偏移 x/y(mm) | 份数（设定/实出） | 扫码结果（可读/不可读） | 取消任务结果（队列移除/未移除） | 结论（通过/未通过） | 备注（报错码/错位/缩放/缺字） |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1（普通打印机） | | | | | | 四边：／网格：／100mm： | | / | | | 未执行 | |
+| 2（标签打印机） | | | | | | 四边：／网格：／100mm： | | / | | | 未执行 | |
+| 3（可选：网络/蓝牙） | | | | | | 四边：／网格：／100mm： | | / | | | 未执行 | |
+
+回填规则：仅当本行全部测试项通过且卡尺/扫码留档后，结论方可改"通过"，
+再回 `PRINTER_COMPATIBILITY.md` 把对应类别 L4 升级为 L3 并标注本表编号；
+`verified_with_hardware=True` 只允许在存在真实验收记录时出现。
+
+---
+
 ## 3. 十类要求覆盖点逐一说明
 
 > 每一项均注明：在哪里被覆盖、以什么形式、自动化覆盖到哪一层、
@@ -430,6 +742,11 @@ zpl/tspl/cpcl 计数未变仅内容改写）；合计净增 141 项 passed（456
   - `test_calibration.py::TestVerifyScale`：`test_mismatch_reported_false`、
     `test_match_reported_true`、`test_missing_module_raises_unsupported_platform`。
 - **待人工验收**：驱动是否自行缩放（应用无法单方面强制，见兼容性文档 1.2.5）。
+- **第三轮 P1b 细化（2026-10-22）**：缩放判定升级为 `scale_policy` 三级
+  分级（block/warn/ok，见 2B.3）：超容差未许可 → block 阻止提交；已确认
+  转换 / 设备未声明或未知支持 1:1 → warn 弹确认框给【取消/继续打印】；
+  匹配且声明支持 1:1 → ok。核心诚信口径：**PDF 页面尺寸正确 ≠ 物理标签
+  输出尺寸正确**，第三方驱动缩放不受软件控制。
 
 ### 3.8 打印任务失败与取消 = cancel/query 守卫 + PrintResult 语义
 
@@ -545,11 +862,25 @@ zpl/tspl/cpcl 计数未变仅内容改写）；合计净增 141 项 passed（456
 | USB 私有直连 / 蓝牙 SPP·BLE / LPR | **⑤ 尚未实现（按设计未做）** | 一律抛 TRANSPORT_NOT_IMPLEMENTED，不伪装可用 |
 | 驱动下载/安装/UAC 提权全过程 | **④ 尚未实测（未执行）** | 应用只检测与指引，不捆绑不自动安装 |
 | 驱动安装→刷新打印机状态闭环 | **④ 尚未实测（未执行）** | LAUNCHED≠安装成功，需真机走完复核 |
-| 1.1.0 安装包（Inno Setup）编译 / exe / 便携包 | **⑤ 尚未实现（未构建）+ ④ 尚未实测** | Linux 无 ISCC.exe、无法产出 Windows 产物；步骤见 `BUILD_REPORT.md` 第 7 节 |
+| 1.1.0 安装包（Inno Setup）编译 / exe / 便携包 | **⑤ 尚未实现（未构建）+ ④ 尚未实测** | Linux 无 ISCC.exe、无法产出 Windows 产物；步骤见 2B.7 与 `BUILD_REPORT.md` 第 7 节 |
+| RunLater 线程生命周期（P0） | **① 自动化通过** | `test_runlater_lifecycle` 2 项；全量 EXIT=0、无 Destroyed、连跑稳定 |
+| 静区 mm↔模块换算 / gap 隔离 / unapplied 诚实标记（P1a） | **① 自动化通过** | `test_print_config_semantics` 29 项 |
+| 缩放风险 block/warn 分级 + 取消选项（P1b） | **① 自动化通过（分级逻辑）+ ④ 尚未实测（对话框真机交互）** | `test_scale_risk` 32 项；PDF 正确 ≠ 物理正确 |
+| 四态 outcome / verified 严格守卫（P3a） | **① 自动化通过** | `test_protocol_state_audit` 51 项 |
 | 第三方 python-barcode 交叉验证 | **跳过(1)** | 可选库未安装，非缺陷 |
 | 校准旧缺失分支 | **跳过(1)** | 已被 pdf_render 覆盖，按设计 skip |
 
-**结论（第二轮 2026-10-20）：自动化 597 passed / 2 skipped（客户端）+
+**结论（第三轮 2026-10-22，以此为准）：自动化 711 passed / 2 skipped
+（客户端，收集 713，EXIT=0，连续 3 次稳定，无 QThread Destroyed/abort）+
+167 passed（服务端，EXIT=0，1 条第三方 anyio 告警）全部通过，0 failed
+0 error；2 项跳过均为已说明的环境/设计原因。P0 线程生命周期修复消除了
+第二轮的析构终止现象；P1a 静区单位转换/间隙隔离/unapplied、P1b 缩放
+block/warn 分级与取消选项、P3a 四态与 verified 守卫均有自动化闭环。
+无任何型号经真实设备测试，②Windows 构建通过与 ③真实设备实测本轮均为
+0 项；Windows 发布门禁按 2B.7 手册执行，硬件验收按 2B.8 空表在真机填写。
+第二轮 597/167 结论与第一轮 456/167 历史记录见 2A / 2.1/2.2。**
+
+**结论（第二轮 2026-10-20，历史保留）：自动化 597 passed / 2 skipped（客户端）+
 167 passed（服务端）全部通过，0 failed 0 error；2 项跳过均为已说明的
 环境/设计原因。客户端进程在 pytest 总结输出后被 Qt offscreen 析构终止
 （非失败，见 1.3）。无任何型号经真实设备测试，②Windows 构建通过与

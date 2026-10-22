@@ -224,9 +224,27 @@ class PrinterCapabilities:
         caps.supports_true_size = bool(d.get("supports_true_size", False))
         caps.supports_gap_sensor = bool(d.get("supports_gap_sensor", False))
         caps.needs_vendor_driver = bool(d.get("needs_vendor_driver", False))
-        caps.verified_with_hardware = bool(d.get("verified_with_hardware", False))
+        # 实测标识严格解析：只有明确为真（True / 1 / "true"/"1"/"yes"）才置 True；
+        # 缺省、None、False、"false"、"0" 等一切未知值一律 False，禁止把
+        # 非布尔真值（任意非空字符串）误当已实测。
+        caps.verified_with_hardware = _truthy_verified(
+            d.get("verified_with_hardware", False))
         caps.notes = str(d.get("notes", ""))
         return caps
+
+
+def _truthy_verified(value) -> bool:
+    """严格解析 ``verified_with_hardware``：仅明确为真才返回 True。
+
+    禁止 ``bool()`` 裸转：非空字符串（"false"、"0" 等）在 Python 为真值，
+    会把未实测误标为已实测。缺省/None/False/任意未知值一律 False。
+    """
+    if value is True or value == 1:
+        return True
+    if isinstance(value, str) and value.strip().lower() in (
+            "true", "1", "yes", "y", "on"):
+        return True
+    return False
 
 
 def infer_transport_from_port(port_name: str | None) -> Transport:

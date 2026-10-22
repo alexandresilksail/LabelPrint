@@ -20,12 +20,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..widgets import (
-    Card, MutedLabel, PrimaryButton, RunLater, confirm, error, info, warn,
+    SILENT_DIALOGS, Card, MutedLabel, PrimaryButton, RunLater, confirm,
+    error, info, warn,
 )
+from ...printing import scale_policy
 from ...barcode.encoder import encode_with_quiet_zone
 from ...printing.adapters.registry import build_adapter
 from ...printing.calibration import (
-    DEFAULT_QUIET_MODULES, apply_offset, check_label_geometry,
+    apply_offset, check_label_geometry,
     check_module_width, check_quiet_zone, render_test_page_pdf, verify_scale,
 )
 from ...printing.config_store import (
@@ -201,6 +203,61 @@ class PaperConversionDialog(QDialog):
         dlg = cls(parent, message)
         dlg.exec()
         return dlg._choice
+
+
+# ---------------------------------------------------------------------------
+# 缩放风险确认对话框：warn 级风险列出全部原因，提供【取消】/【继续打印】
+# （block 级直接中止，不进入本对话框；禁止无提示地继续打印）
+# ---------------------------------------------------------------------------
+class ScaleRiskConfirmDialog(QDialog):
+    """缩放风险（warn）显式确认：取消中止 / 继续打印。
+
+    诚信核心：PDF 页面尺寸正确不代表物理标签输出尺寸正确，第三方驱动
+    缩放不受本软件控制；即使用户选择继续，也不宣称软件控制驱动缩放。
+    """
+
+    def __init__(self, parent=None, risk: scale_policy.ScaleRisk | None = None):
+        super().__init__(parent)
+        self._continue = False
+        self.setWindowTitle("缩放风险确认")
+        self.setMinimumWidth(520)
+        v = QVBoxLayout(self)
+
+        head = QLabel("检测到需要你确认的缩放风险：")
+        head.setObjectName("Title")
+        v.addWidget(head)
+
+        reasons = risk.reason_texts() if risk else []
+        for r in reasons:
+            v.addWidget(MutedLabel(f"· {r}"))
+
+        v.addWidget(MutedLabel(
+            "说明：PDF 页面尺寸正确不代表物理标签输出尺寸正确；"
+            "第三方驱动缩放不受本软件控制，建议先用测试页复核实际输出。"
+            "取消可中止本次打印；继续打印由你自行承担输出尺寸风险。"))
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        b_cancel = QPushButton("取消（中止打印）")
+        b_cancel.clicked.connect(self.reject)
+        b_continue = QPushButton("继续打印")
+        b_continue.clicked.connect(self._choose_continue)
+        row.addWidget(b_continue)
+        row.addWidget(b_cancel)
+        v.addLayout(row)
+
+    def _choose_continue(self):
+        self._continue = True
+        self.accept()
+
+    @classmethod
+    def ask(cls, parent, risk: scale_policy.ScaleRisk) -> bool:
+        """返回 True=继续打印，False=取消中止。离屏静默环境默认继续。"""
+        if SILENT_DIALOGS:
+            return True
+        dlg = cls(parent, risk)
+        dlg.exec()
+        return dlg._continue
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +674,9 @@ class PrintPage(QWidget):
         body.addWidget(self.mode_basis_label)
         self.cap_hint_label = MutedLabel("")
         body.addWidget(self.cap_hint_label)
+        # 硬件参数诚信提示：走纸/间隙传感/打印浓度不由软件直接控制
+        self.hw_notice_label = MutedLabel("")
+        body.addWidget(self.hw_notice_label)
 
         # 参数
         form = QFormLayout()
@@ -773,6 +833,10 @@ class PrintPage(QWidget):
         if not caps.supports_gap_sensor:
             hints.insert(0, "该设备不支持间隙传感，间隙仅用于专用协议打印/不生效")
         self.cap_hint_label.setText("\n".join(f"· {h}" for h in hints))
+        # 硬件参数诚信提示（走纸/间隙传感/打印浓度不由软件直接控制）
+        notices = L.hardware_controlled_notice(caps)
+        self.hw_notice_label.setText(
+            "硬件参数：\n" + "\n".join(f"· {n}" for n in notices))
         self._refresh_mode_basis()
 
         self._populate_papers()
@@ -843,6 +907,23 @@ class PrintPage(QWidget):
             "sub_protocol": self.tcp_proto_combo.currentData(),
             "host_port": self.tcp_host_edit.text().strip(),
         }
+
+    @staticmethod
+    def _hardware_params_from_config(cfg) -> dict:
+        """从配置收集软件无法控制的硬件参数（走纸/间隙传感/打印浓度）。
+
+        这些参数不进入条码布局，只原样交给渲染器记入 meta ``unapplied_params``，
+        由 UI 标注“未应用（不由软件直接控制）”，禁止显示“已应用”。
+        """
+        if cfg is None:
+            return {}
+        out: dict = {}
+        for key in ("feed_mm", "feed_length_mm", "gap_sensor",
+                    "gap_sensor_mode", "print_darkness", "darkness"):
+            value = getattr(cfg, key, None)
+            if value is not None:
+                out[key] = value
+        return out
 
     # ---------------- 打印准备 / 预览 / 提交 ----------------
     def _template_paper(self, t):
@@ -915,20 +996,29 @@ class PrintPage(QWidget):
         def _do():
             adapter = build_adapter(eff_caps)
             meta = None
+            render_params = None
+            cfg = self._config_store.load(printer)
             if mode == L.MODE_UNIVERSAL:
                 fd, pdf_path = tempfile.mkstemp(
                     suffix=".pdf", prefix="label_print_")
                 os.close(fd)
                 try:
+                    # 配置 → 渲染参数：静区 mm 优先，缺省回退 11 模块；
+                    # 间隙仅直通记录，硬件参数列入未应用（禁止标“已应用”）
+                    render_params = L.resolve_render_params(
+                        cfg, template=t, caps=eff_caps)
                     # items 为未展开原始编码；模板份数由渲染器唯一展开
                     meta = render_label_sheet_pdf(
                         items, t, pdf_path,
-                        quiet=DEFAULT_QUIET_MODULES,
+                        quiet=render_params["quiet_modules"],
+                        quiet_zone_mm=render_params["quiet_zone_mm"],
                         offset_x_mm=job.offset_x_mm,
                         offset_y_mm=job.offset_y_mm,
-                        target_module_mm=job.module_mm,
+                        target_module_mm=render_params["target_module_mm"],
+                        label_gap_mm=render_params["label_gap_mm"],
                         paper_override=job.paper,
                         orientation_override=job.orientation,
+                        hardware_params=self._hardware_params_from_config(cfg),
                     )
                 except ValueError as exc:
                     # 网格超出所选纸张：明确拒绝，不提交（含所选纸张/网格尺寸）
@@ -950,7 +1040,8 @@ class PrintPage(QWidget):
                     issues.append(ValidationIssue.error(
                         exc.code, exc.user_message))
             errors, warnings = L.group_issues(issues)
-            # 通用路径缩放预检（warning 不阻止提交）
+            # 通用路径缩放预检（warning 不阻止提交）；保留报告供分级确认
+            scale = None
             if job.pdf_path:
                 try:
                     scale = verify_scale(job.pdf_path, job.paper,
@@ -964,6 +1055,9 @@ class PrintPage(QWidget):
             return {
                 "adapter": adapter, "job": job, "errors": errors,
                 "warnings": warnings, "meta": meta,
+                "render_params": render_params,
+                "scale_report": scale,
+                "eff_caps": eff_caps,
                 "submit_after": submit_after, "printer": printer,
                 "mode": mode,
             }
@@ -1011,6 +1105,24 @@ class PrintPage(QWidget):
             error(self, "打印校验未通过", msg)
             return
 
+        # ---- 缩放风险分级：block 中止不打印；warn 弹确认（取消/继续） ----
+        risk = self._classify_preview_risk(payload)
+        if risk is not None and risk.blocked:
+            if payload["submit_after"]:
+                self._release_lock(printer)
+            self._set_submitting_ui(False)
+            self._session.cleanup()
+            error(self, "缩放风险阻止提交", risk.message)
+            return
+        if risk is not None and risk.warned:
+            if not ScaleRiskConfirmDialog.ask(self, risk):
+                # 用户取消：中止本次打印，不预览不提交
+                if payload["submit_after"]:
+                    self._release_lock(printer)
+                self._set_submitting_ui(False)
+                self._session.cleanup()
+                return
+
         # 打印前预览：rasterize_preview 渲染 PNG 展示（专用协议无 PDF 预览）
         paths = []
         if job.pdf_path:
@@ -1020,8 +1132,10 @@ class PrintPage(QWidget):
             except PrintError as exc:
                 warn(self, "预览不可用", exc.user_message)
 
-        self._show_preview_dialog(paths, warnings, job,
-                                  mode=payload["mode"])
+        self._show_preview_dialog(
+            paths, warnings, job, mode=payload["mode"],
+            meta=payload.get("meta"),
+            eff_caps=payload.get("eff_caps"))
 
         if not payload["submit_after"]:
             self._session.cleanup()
@@ -1038,7 +1152,36 @@ class PrintPage(QWidget):
             return
         self._submit_job(payload["adapter"], job, printer)
 
-    def _show_preview_dialog(self, paths, warnings, job, mode=None):
+    @staticmethod
+    def _classify_preview_risk(payload: dict):
+        """按预检报告 + 设备能力做缩放风险分级（纯函数，主线程调用）。
+
+        预检不可用（模块缺失/未落盘）时不静默放行：以纸张自身尺寸兜底，
+        能力未声明/未知 → warn，由确认对话框给用户取消选项。
+        """
+        job = payload["job"]
+        caps = payload.get("eff_caps")
+        report = payload.get("scale_report")
+        tol = job.scale_tolerance_mm
+        if report is not None:
+            return scale_policy.classify_scale_risk(
+                report.actual_width_mm, report.actual_height_mm,
+                job.paper, caps,
+                allow_paper_conversion=job.allow_paper_conversion,
+                tolerance_mm=tol,
+            )
+        if job.paper is None:
+            return None
+        # 无法实测 PDF 页面：目标物理尺寸无法由软件确认 → warn
+        return scale_policy.classify_scale_risk(
+            job.paper.width_mm, job.paper.height_mm,
+            job.paper, caps,
+            allow_paper_conversion=job.allow_paper_conversion,
+            tolerance_mm=tol,
+        )
+
+    def _show_preview_dialog(self, paths, warnings, job, mode=None,
+                             meta=None, eff_caps=None):
         dlg = QDialog(self)
         dlg.setWindowTitle("打印预览")
         dlg.setMinimumSize(420, 520)
@@ -1065,6 +1208,38 @@ class PrintPage(QWidget):
         warn_text = "\n".join(f"· {w.message}" for w in warnings)
         if warn_text:
             hv.addWidget(MutedLabel("警告：\n" + warn_text))
+
+        # ---- 配置生效回执（仅列实际进入输出的项）----
+        if meta:
+            applied = []
+            qm = meta.get("quiet_modules_applied")
+            if qm is not None:
+                applied.append(f"静区 {qm} 模块")
+            qz = meta.get("quiet_zone_mm_applied")
+            if qz is not None:
+                applied.append(f"约 {qz:.2f}mm")
+            mm = meta.get("module_mm_applied")
+            if mm is not None:
+                applied.append(f"模块宽 {mm:.3f}mm")
+            gap = meta.get("label_gap_mm_passthrough")
+            if gap is not None:
+                applied.append(
+                    f"标签间隙 {gap:g}mm（未参与条码布局，仅直通记录）")
+            if applied:
+                hv.addWidget(MutedLabel("已应用（进入本次输出）：\n"
+                                        + "· " + "；".join(applied)))
+
+            # 未应用参数：如实标注，禁止显示“已应用”
+            unapplied = meta.get("unapplied_params") or []
+            if unapplied:
+                hv.addWidget(MutedLabel(
+                    "未应用（不由软件直接控制）：\n"
+                    + "\n".join(f"· {u}" for u in unapplied)))
+
+        # 硬件参数诚信提示（走纸/间隙传感/打印浓度）
+        for notice in L.hardware_controlled_notice(eff_caps):
+            hv.addWidget(MutedLabel(f"· {notice}"))
+
         hv.addWidget(MutedLabel(
             f"任务：{job.describe()}；提交到队列/指令已发送均不代表物理打印完成。"))
         scroll.setWidget(host)

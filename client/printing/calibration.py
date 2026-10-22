@@ -21,6 +21,7 @@ from .capabilities import PaperSize, PrinterCapabilities
 from .errors import PrintError
 from .job import LabelJobSpec, ScaleReport, ValidationIssue
 from .templates import GS1_MAX_MODULE_MM, GS1_MIN_MODULE_MM
+from .units import quiet_zone_mm_to_modules
 
 #: 每侧默认静区模块数（与 pdf.py DEFAULT_QUIET_MODULES=11、GS1 规范一致）
 DEFAULT_QUIET_MODULES = 11
@@ -70,6 +71,27 @@ def check_quiet_zone(module_mm: float, quiet_modules: int,
             "可能无法稳定识读",
         )
     return None
+
+
+def check_quiet_zone_mm(quiet_zone_mm: float, module_mm: float,
+                       required_modules: int = DEFAULT_QUIET_MODULES
+                       ) -> ValidationIssue | None:
+    """毫米版本静区校验：先经 ``units.quiet_zone_mm_to_modules`` 换算为模块数，
+    再委托 :func:`check_quiet_zone`。纯函数，行为与模块数版本一致。
+
+    - ``quiet_zone_mm``：用户配置的每侧静区物理宽度（mm，非负）；
+    - ``module_mm``：当前模块宽度（mm，必须为正）；
+    - ``required_modules``：要求的每侧静区模块数（默认 11，GS1）。
+
+    换算入口唯一（:mod:`client.printing.units`）；``module_mm`` 非正或
+    ``quiet_zone_mm`` 为负时由换算函数显式抛 ``ValueError``，不静默回退。
+
+    语义边界：本函数只校验**条码静区**；标签物理间隙 ``label_gap_mm``
+    （走纸/定位硬件参数）不是静区，禁止传入本函数。
+    """
+    quiet_modules = quiet_zone_mm_to_modules(quiet_zone_mm, module_mm)
+    return check_quiet_zone(module_mm, quiet_modules,
+                            required_modules=required_modules)
 
 
 def check_module_width(module_mm: float) -> ValidationIssue | None:

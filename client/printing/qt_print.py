@@ -118,9 +118,12 @@ def resolve_effective_page(
 
     if spec.allow_paper_conversion:
         effective = PaperSize("pdf-page", pdf_w_mm, pdf_h_mm)
+        # 与 scale_policy 分级一致：转换属 warn 级，须附驱动缩放诚信提示，
+        # 不得宣称软件控制第三方驱动缩放。
         note = (
             f"按 PDF 实际尺寸 {pdf_w_mm:.2f}×{pdf_h_mm:.2f}mm 1:1 输出"
-            "（与所选纸张不一致，已按用户确认转换）"
+            "（已按用户确认转换）。PDF 页面尺寸正确不代表物理标签输出"
+            "尺寸正确；第三方驱动缩放不受本软件控制，请先以测试页复核。"
         )
         return effective, note, None
 

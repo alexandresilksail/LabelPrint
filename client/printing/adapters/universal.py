@@ -25,11 +25,12 @@ PDF 预检 ``ScaleReport.ok=False`` 按偏差形态分级：
 
 from __future__ import annotations
 
-from ..capabilities import PrinterCapabilities
+from ..capabilities import PaperSize, PrinterCapabilities
 from ..errors import PrintError
 from ..job import (
     JobState, LabelJobSpec, PrintResult, ScaleReport, ValidationIssue,
 )
+from ..scale_policy import classify_scale_risk
 from ._common import collect_common_issues, has_error
 from .base import BasePrinterAdapter
 from .transports import is_windows
@@ -57,10 +58,16 @@ def _classify_scale_report(
 ) -> list[ValidationIssue]:
     """把 ``ok=False`` 的预检报告分级（纯逻辑分支，不触碰硬件）。
 
+    block/warn 判定与 :mod:`client.printing.scale_policy` 严格对齐：
+
     - 两轴偏差均超出容差 → 整体纸张尺寸不一致：
       ``allow_paper_conversion=False`` → ``PAPER_SIZE_MISMATCH`` error 阻止提交；
       ``True`` → 降级为 ``PAPER_SIZE_MISMATCH`` warning，注明已按用户确认转换。
     - 仅单轴/局部偏差 → 保持 ``SCALE_MISMATCH`` warning 语义（不阻止提交）。
+
+    能力维度（``supports_true_size`` 未声明/未知）的缩放风险不在此处附加
+    issue：ok 报告路径保持“无尺寸 issue”的既有契约，能力维度的确认
+    提示由 UI 缩放风险确认对话框承担（避免无提示继续打印）。
     """
     tol = report.tolerance_mm or job.scale_tolerance_mm
     size_mismatch = (abs(report.deviation_x_mm) > tol
@@ -73,18 +80,27 @@ def _classify_scale_report(
         f"{report.deviation_y_mm:+.2f})mm"
     )
     if size_mismatch:
-        if job.allow_paper_conversion:
-            note = "已按用户确认转换：按 PDF 实际尺寸 1:1 输出"
-            extra = ("；" + "；".join(report.warnings)
-                     if report.warnings else "")
-            return [ValidationIssue.warning(
+        # 与 scale_policy 对齐：超容差未许可 → block(error)；已确认转换 → warn
+        expected = PaperSize(
+            "expected", report.expected_width_mm, report.expected_height_mm)
+        risk = classify_scale_risk(
+            report.actual_width_mm, report.actual_height_mm, expected,
+            None,  # 能力维度不在报告路径重复提示，见 docstring
+            allow_paper_conversion=job.allow_paper_conversion,
+            tolerance_mm=tol,
+        )
+        if risk.blocked:
+            return [ValidationIssue.error(
                 PrintError.PAPER_SIZE_MISMATCH,
-                f"{detail}；{note}{extra}。",
+                f"{detail}，尺寸不一致且未允许纸张转换，禁止静默缩放；"
+                "请核对 PDF 尺寸与所选纸张，或在打印确认中允许按 PDF 实际尺寸转换。",
             )]
-        return [ValidationIssue.error(
+        note = "已按用户确认转换：按 PDF 实际尺寸 1:1 输出"
+        extra = ("；" + "；".join(report.warnings)
+                 if report.warnings else "")
+        return [ValidationIssue.warning(
             PrintError.PAPER_SIZE_MISMATCH,
-            f"{detail}，尺寸不一致且未允许纸张转换，禁止静默缩放；"
-            "请核对 PDF 尺寸与所选纸张，或在打印确认中允许按 PDF 实际尺寸转换。",
+            f"{detail}；{note}{extra}。",
         )]
 
     # 局部/单轴偏差：SCALE_MISMATCH warning（容差附近的微小偏差不阻止提交）

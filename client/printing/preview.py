@@ -5,6 +5,12 @@
 - 只做等比缩放（统一模块宽度），禁止非等比拉伸；
 - 保留静区；
 - 明确报告越界与缩放不足风险。
+
+语义边界（冻结）：
+- 本模块只处理**条码图形自身几何**（模块宽、条码含静区宽度、数字区高度）；
+- 标签纸相邻标签的**物理间隙** ``label_gap_mm``（走纸/定位硬件参数，仅专用
+  协议 TSPL GAP 等与设备相关）**不是**条码静区，也不是布局留白；
+  :func:`fit_barcode` 不接受该参数，调用方严禁把它叠加进静区或条码宽度。
 """
 
 from ..barcode.encoder import module_count
@@ -35,6 +41,9 @@ def fit_barcode(label_width_mm, label_height_mm, barcode_type, *,
         warnings       风险提示列表
     规则：条码 + 静区 + 数字必须完整放入标签；超出时取标签允许的最大
     模块宽度并给出警告（不会非等比压缩）。
+
+    注意：本函数**不接受** ``label_gap_mm``（标签物理间隙，走纸/定位硬件
+    参数）；间隙不属于条码图形，禁止叠加到静区或条码宽度上。
     """
     warnings = []
     total = total_modules(barcode_type, quiet)

@@ -75,8 +75,13 @@ class PrinterPrintConfig:
     dpi: int | None = None
     quality: PrintQuality = PrintQuality.NORMAL
     default_copies: int = 1
+    #: 标签纸相邻标签的物理间隙（走纸/定位硬件参数，仅专用协议 TSPL GAP
+    #: 等与设备相关）；**不是**条码静区，禁止进入条码布局或静区换算
     label_gap_mm: float = 0.0
+    #: 条码每侧静区物理宽度（mm，UI/配置层单位）；渲染/编码层经 units
+    #: 换算为模块数；None = 用 GS1 默认 11 模块 × 模块宽
     quiet_zone_mm: float | None = None
+    #: 条码模块宽度（mm）；None = 由渲染 fit 取默认/自由适配
     module_mm: float | None = None
     use_calibration: bool = False
     notes: str = ""

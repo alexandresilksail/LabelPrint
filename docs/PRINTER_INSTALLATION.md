@@ -7,10 +7,15 @@
 
 - 本文档对应安装器脚本 `installer/codelabel.iss` 版本 **1.1.0**。
 - 1.1.0 安装包**尚未在本环境构建**：开发环境为 Linux 沙箱，无 Windows、无
-  ISCC.exe。可复现的 Windows 构建步骤（`scripts\build_client.bat` →
-  `ISCC.exe installer\codelabel.iss` → `dist\installer\CodeLabelStudio-Setup-1.1.0.exe`）
-  与 SHA-256 回填要求见 `docs/BUILD_REPORT.md` 第 7 节；本文不重复罗列命令，
-  不提供任何未构建产物的校验和。
+  ISCC.exe。**完整可复制执行的 Windows 发布门禁运行手册**（环境准备 →
+  `pytest` 双套件期望退出码 0 → `build_client.bat` → `ISCC.exe` →
+  SHA-256 回填 → 升级/卸载验证 → 真机验收空表）见
+  `docs/PRINTER_TEST_REPORT.md` 第 2B.7 节；构建命令与 SHA-256 表另见
+  `docs/BUILD_REPORT.md` 第 7 节。本文不重复罗列命令，不提供任何未构建
+  产物的校验和。
+- 2026-10-22 第三轮自动化复测：客户端 711 passed / 2 skipped（EXIT=0）、
+  服务端 167 passed（EXIT=0）；这仅代表逻辑/守卫在 Linux 通过，**不代表
+  1.1.0 已构建或已在真机验证**。
 
 ## 1. 应用安装（无需管理员权限）
 
@@ -165,5 +170,6 @@ Get-Printer | Format-Table -AutoSize Name,DriverName,PortName,PrinterStatus
 | 真实驱动安装、队列绑定、设备在线判定 | ④ 尚未实测 | 需真实 Windows + 真实打印机 |
 | 失败恢复流程（卸载残留 → 重启 → 官方源重装 → 队列恢复） | ④ 尚未实测 | 需真实失败环境演练 |
 | 安全红线（不捆绑/不自动安装/不关闭 DSE/不改组策略） | ① 自动化通过（代码落实）/ ④ 异常路径未实测 | 无签名旁路、无 `bcdedit` 调用 |
-| 1.1.0 Windows 安装包构建 | ④ 尚未实测（未构建） | Linux 沙箱无 ISCC；步骤见 BUILD_REPORT.md 第 7 节 |
+| 1.1.0 Windows 安装包构建 | ④ 尚未实测（未构建）+ ⑤ 尚未实现（未构建） | Linux 沙箱无 ISCC；完整发布门禁手册见 PRINTER_TEST_REPORT.md 2B.7，构建命令见 BUILD_REPORT.md 第 7 节 |
+| 第三轮自动化（P0/P1a/P1b/P3a） | ① 自动化通过 | 711 passed/2 skipped（EXIT=0）+ 167 passed（EXIT=0）；硬件/构建仍未执行 |
 | 数字签名、自动更新 | ⑤ 尚未实现 | 无证书 / 规格未要求 |

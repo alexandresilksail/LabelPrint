@@ -34,6 +34,7 @@ from ...printing.config_store import MAX_OFFSET_MM
 from ...printing.errors import PrintError
 from ...printing.job import LabelContent, LabelJobSpec, ValidationIssue
 from ...printing.templates import GS1_MODULE_MM
+from ...printing.units import quiet_zone_mm_to_modules
 
 #: 默认静区模块数（与 PDF 渲染 DEFAULT_QUIET_MODULES 一致）
 DEFAULT_QUIET_MODULES = 11
@@ -424,6 +425,18 @@ def build_label_content(items, template, form: dict,
     if gap < 0:
         gap = 0.0
 
+    # 静区：mm 配置经 units 唯一入口换算为模块数；未给/非法 → GS1 默认 11。
+    # 注意 gap（物理间隙）绝不参与静区换算。
+    quiet_modules = DEFAULT_QUIET_MODULES
+    raw_qz = form.get("quiet_zone_mm")
+    if raw_qz is not None:
+        qz = _finite_float(raw_qz, -1.0)
+        if qz >= 0:
+            try:
+                quiet_modules = quiet_zone_mm_to_modules(qz, module_mm)
+            except (ValueError, ZeroDivisionError):
+                quiet_modules = DEFAULT_QUIET_MODULES
+
     copies = getattr(template, "copies", 1)
     try:
         template_copies = max(1, int(copies))
@@ -443,7 +456,7 @@ def build_label_content(items, template, form: dict,
         offset_x_mm=offset_x,
         offset_y_mm=offset_y,
         module_mm=module_mm,
-        quiet_modules=DEFAULT_QUIET_MODULES,
+        quiet_modules=quiet_modules,
         label_gap_mm=gap,
     )
 
@@ -518,6 +531,122 @@ def build_job_from_form(template_paper, capabilities,
     if content is not None:
         job.label_content = content
     return job
+
+
+# ---------------------------------------------------------------------------
+# 校准配置 → 渲染参数映射 / 硬件参数诚信提示（纯函数）
+# ---------------------------------------------------------------------------
+#: 软件无法直接控制、必须如实标记"未应用"的硬件参数键（UI/配置可能收集）。
+#: 键 → 中文参数名；这些参数由打印机硬件/驱动/面板决定，软件不直接应用。
+_HARDWARE_PARAM_KEYS = {
+    "feed_mm": "走纸长度（进纸）",
+    "feed_length_mm": "走纸长度（进纸）",
+    "gap_sensor": "间隙传感模式",
+    "gap_sensor_mode": "间隙传感模式",
+    "print_darkness": "打印浓度（温度/黑度）",
+    "darkness": "打印浓度（温度/黑度）",
+}
+
+#: 硬件参数统一标注（诚信红线：禁止显示"已应用"）
+HARDWARE_NOT_CONTROLLED = "不由软件直接控制（打印机硬件/驱动/面板参数）"
+
+
+def _cfg_get(config, key: str, default=None):
+    """从 PrinterPrintConfig 或 dict 配置取值（兼容两种载体）。"""
+    if config is None:
+        return default
+    if isinstance(config, dict):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def hardware_controlled_notice(caps: PrinterCapabilities | None) -> list[str]:
+    """硬件控制参数提示文案（纯函数）：逐项声明"不由软件直接控制"。
+
+    - 走纸与间隙定位：由打印机硬件控制；
+    - 打印浓度/温度：由驱动或设备面板设置；
+    - 设备未声明 ``supports_gap_sensor`` 时追加"间隙参数仅对支持设备生效"。
+    """
+    notices = [
+        "标签走纸与间隙定位由打印机硬件控制，不由软件直接控制",
+        "打印浓度（打印温度/黑度）由打印机驱动或设备面板设置，"
+        "不由软件直接控制",
+    ]
+    if caps is None or not getattr(caps, "supports_gap_sensor", False):
+        notices.append("该设备不支持间隙传感，间隙参数仅对支持设备生效")
+    return notices
+
+
+def resolve_render_params(config, template=None, *,
+                         caps: PrinterCapabilities | None = None) -> dict:
+    """校准配置 → PDF 渲染参数映射（纯函数，不触碰系统 API）。
+
+    ``config`` 可为 :class:`PrinterPrintConfig` 或等价 dict；``template`` 预留
+    （未来从模板补默认值），当前不改变既有份数/偏移/纸张/分页语义。
+
+    返回 dict：
+    - ``quiet_zone_mm``：配置的静区物理宽度（mm，未设置为 None）；
+    - ``quiet_modules``：换算后的每侧静区模块数（未设置 = GS1 默认 11）；
+    - ``module_mm`` / ``target_module_mm``：模块宽度（未设置 → None，由渲染
+      fit 自由适配，不伪造默认）；
+    - ``label_gap_mm``：物理间隙原值，``label_gap_mm_passthrough=True``，
+      明确"未参与条码静区/布局"；
+    - ``unapplied_params``：收集了但渲染器/软件无法应用的硬件参数
+      （走纸/间隙传感/打印浓度），逐项标注"不由软件直接控制"；
+    - ``hardware_notices``：:func:`hardware_controlled_notice` 文案。
+
+    诚信红线：任何未实际进入输出的设置都进入 ``unapplied_params``，
+    供 UI 显示"未应用"，禁止显示"已应用"。
+    """
+    raw_qz = _cfg_get(config, "quiet_zone_mm")
+    qz = _finite_float(raw_qz, -1.0) if raw_qz is not None else None
+    if qz is not None and qz < 0:
+        qz = None
+
+    raw_module = _cfg_get(config, "module_mm")
+    module_mm = _finite_float(raw_module, -1.0) if raw_module is not None else None
+    if module_mm is not None and module_mm <= 0:
+        module_mm = None
+
+    # 静区 mm → 模块数：模块宽缺省时用 GS1 标称做名义换算，
+    # 实际渲染模块宽由 fit 决定（pdf 层另行按 fit 结果换算）。
+    conv_module = module_mm if module_mm is not None else GS1_MODULE_MM
+    quiet_modules = DEFAULT_QUIET_MODULES
+    if qz is not None:
+        try:
+            quiet_modules = quiet_zone_mm_to_modules(qz, conv_module)
+        except ValueError:
+            quiet_modules = DEFAULT_QUIET_MODULES
+            qz = None
+
+    gap = _finite_float(_cfg_get(config, "label_gap_mm", 0.0), 0.0)
+    if gap < 0:
+        gap = 0.0
+
+    # 硬件参数：收集到即如实列入未应用，绝不静默丢弃/不标"已应用"。
+    # 对象载体缺失硬件属性时按 None 处理（不抛 AttributeError）。
+    unapplied_params: list[str] = []
+    for key, label in _HARDWARE_PARAM_KEYS.items():
+        if isinstance(config, dict):
+            value = config.get(key)
+        elif config is not None:
+            value = getattr(config, key, None)
+        else:
+            value = None
+        if value is not None:
+            unapplied_params.append(
+                f"{label}（{key}={value}）：{HARDWARE_NOT_CONTROLLED}")
+
+    return {
+        "quiet_zone_mm": qz,
+        "quiet_modules": quiet_modules,
+        "module_mm": module_mm,
+        "target_module_mm": module_mm,
+        "label_gap_mm": gap,
+        "label_gap_mm_passthrough": True,
+        "unapplied_params": unapplied_params,
+        "hardware_notices": hardware_controlled_notice(caps),
+    }
 
 
 # ---------------------------------------------------------------------------
