@@ -518,6 +518,50 @@ Windows/无设备），清单见 `docs/PRINTER_TEST_REPORT.md` 第 4 节；自�
 | U5 | 自定义数据目录升级向导页不回填历史选择（8B.3 观察项） | ④ 待 Windows 实测 | 升级验收时核对；必要时在安装器 `InitializeWizard` 读取注册表回填（属安装器改动，本轮未做） |
 | U6 | 覆盖安装升级 / 卸载询问真机行为 | ④ 待 Windows 实测 | 按 11.3 / PRINTER_TEST_REPORT.md 2B.7(e) 人工留档 |
 
+## 8C. 第五轮：Authenticode 完整性 + 打印链路审计 + 发布文档一致性（2026-10-22）
+
+> 本轮定位为**审计 + 回归 + 文档一致性**，不重写打印代码。P1 的
+> `client/printing/authenticode.py` / `driver_installer.py` /
+> `ui/pages/print_export.py` 与 `tests/test_driver_signature.py` 由 P1 维护，
+> 本组只读引用、不修改；本组新增只读守卫 `tests/test_print_chain_audit.py`
+> （19 项）并同步 5 份文档。**未执行 Windows 构建、未执行 WinVerifyTrust
+> 真机验证、未执行真机打印，不伪造任何结果。**
+
+### 8C.1 修复记录
+
+| 位置 | 改动 | 归属 / 说明 |
+|---|---|---|
+| `client/printing/authenticode.py` | 由简单状态映射升级为完整纯策略层：整条链吊销检查（`WTD_REVOKE_WHOLECHAIN`，吊销未知/离线 fail-closed）、证书链错误与 HRESULT 有符号归一化分类、签名者最佳努力提取（失败留 None）、路径绑定大小/mtime 失配重验、`WinVerifyTrust` 句柄 `WTD_STATEACTION_CLOSE` 生命周期 | **P1 落地（本组未改）**；`tests/test_authenticode_policy.py` 60 项纯逻辑覆盖 |
+| `client/printing/driver_installer.py` | `ElevationOutcome.signature` 携带绑定路径的签名结论；skip 仅显式测试/排障、UI 不暴露；扩展名白名单闸门即使 skip 也生效 | **P1 落地（本组未改）** |
+| `client/ui/pages/print_export.py` | 选择新文件（路径变更）强制重验；提权前 `signature_stale` 失配复核；生产路径永不传 `skip_signature_check=True` | **P1 落地（本组未改）** |
+| `tests/test_authenticode_policy.py`（新建） | 吊销/链策略矩阵、HRESULT 有符号归一化、签名者注入提取、失配重验、skip 隔离、Windows 真实实现字面量断言，60 项全 passed | **P1 落地** |
+| `tests/test_print_chain_audit.py`（新建） | 打印链路六项 grep/import 级守卫（份数唯一展开/几何贯通/缩放诚信/通道诚实/状态语义/未验证守卫），19 项全 passed | **本组新增**，不改任何既有断言 |
+| 5 份文档（README / PRINTER_TEST_REPORT / PRINTER_COMPATIBILITY / BUILD_REPORT / 本报告） | 自动化数字更新为终测实测（客户端 832 passed/2 skipped、服务端 167 passed，均 EXIT=0）；补签名完整性口径与第五轮状态 | **本组**；1.1.0 未构建、SHA-256 待回填保持不变 |
+
+终测真实输出：`QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q` →
+**832 passed, 2 skipped（EXIT=0）**；`python3 -m pytest tests_server/ -q` →
+**167 passed, 1 warning（EXIT=0）**。2 项 skip 为环境/设计原因
+（`test_calibration.py:226` 缺失分支已不再适用；`test_encoder.py:65`
+python-barcode 可选库未装）。
+
+### 8C.2 打印链路审计结论（六项全通过，无违规需修复）
+
+份数唯一展开（渲染器单点、任务份数走 setCopyCount/协议）、静区/模块/偏移/
+纸张/DPI 贯通至 PDF meta/协议指令/Qt 原子页、通用队列缩放 warn 诚信提示、
+USB/蓝牙/LPR 明确 `TRANSPORT_NOT_IMPLEMENTED`、SENT/QUEUED 不宣称物理打印完成、
+`verified_with_hardware` 全为 False——逐项证据与守卫见
+`docs/PRINTER_TEST_REPORT.md` 2D.3。**审计未发现违规，故未改动打印代码。**
+
+### 8C.3 第五轮未解决项（接续 8B.4，不重复列已闭环项）
+
+| # | 未解决项 | 级别 | 后续动作 |
+|---|---|---|---|
+| W1 | **Windows 真机 `WinVerifyTrust` 签名验证未执行**：在线证书链校验、吊销服务器可达、明确吊销/链错误/过期/篡改拦截、官方签名包放行、UAC 提权、失配重验闭环 | ④ 待 Windows 真机 | 纯逻辑 60 项已过；真机按 11.3 与 PRINTER_TEST_REPORT 2D.5 留档，禁止以纯逻辑通过替代 |
+| W2 | **1.1.0 Windows 构建未执行**：exe/便携包/安装包未产出，三件 SHA-256 不存在 | ⑤ 未构建 + ④ 未实测 | 按 BUILD_REPORT 7.2 构建后回填哈希，禁止编造 |
+| W3 | **真机打印未执行**：真实队列提交/取消/查询、1:1 卡尺复核、ZPL/TSPL/CPCL 出纸、TCP 9100 连通 | ④ 待 Windows 真机 + 设备 | 无队列/无设备；PDF 页面正确 ≠ 物理输出正确 |
+| W4 | 1.0.0→1.1.0 覆盖升级 / 卸载询问真机行为（承 U5/U6） | ④ 待 Windows 实测 | 升级验收时核对，必要时改安装器回填注册表 |
+| W5 | `v1.1.0` git 标签未创建、`RELEASE_CHECKLIST.md` 仍为 1.0.0 历史清单（承 U2/U4） | 待维护者 | Windows 构建与真机验收通过后由维护者处理；本轮禁止 git 写操作 |
+
 ## 9. GitHub 推送状态
 
 - 远端仓库：`github.com/alexandresilksail/LabelPrint`（分支 main）
@@ -546,6 +590,7 @@ Windows/无设备），清单见 `docs/PRINTER_TEST_REPORT.md` 第 4 节；自�
 | 自动化测试（**2026-10-22 第三轮，以此为准**） | ✅ 客户端 **711 passed/2 skipped**（收集 713，**EXIT=0，连跑稳定无 Destroyed**）；服务端 **167 passed/0 skipped（EXIT=0）**；0 failed 0 error（第二轮 597/167、第一轮 456/167 历史保留于第 3 节） |
 | 第二轮打印审计修复（P0/P1a/P1b/P3a，2026-10-22） | ✅ **全部落地，可自动化部分通过**（新增 4 文件 114 项：RunLater 生命周期、静区配置传递/unapplied、缩放 block/warn 分级与取消选项、四态与 verified 守卫）；对话框真机交互/硬件/构建未实测，五级见 8A.3 |
 | 第四轮版本统一（2026-10-22） | ✅ 桌面版本口径统一为 1.1.0（`__version__`/安装器/显示/安装包文件名四者一致，见 8B.2、BUILD_REPORT 7.4）；AppId 升级路径为**只读代码审查**，升级/卸载真机行为待 Windows（8B.3/8B.4），未伪造实测 |
+| 第五轮 Authenticode 完整性 + 打印链路审计（2026-10-22，**自动化以此为准**） | ✅ 客户端 **832 passed/2 skipped（EXIT=0）**、服务端 **167 passed（EXIT=0）**；P1 吊销整条链/链错误/HRESULT 归一化/签名者提取/失配重验/skip 隔离 60 项纯逻辑通过，打印链路六项审计通过无违规（守卫 19 项）；`WinVerifyTrust` 真机、1.1.0 构建、真机打印均待 Windows（8C） |
 | 自动化测试（2026-10-20 第二轮，历史） | ✅ 客户端 597 passed/2 skipped（收集 599）；服务端 167 passed/0 skipped；0 failed 0 error |
 | 缺陷修复轮（八类，2026-10-20） | ✅ **修复全部落地；可自动化部分通过**（份数唯一展开/纸张一致性/校准参数贯通/LabelContent 协议链路/传输诚实性 SENT 语义/PrintJobSession 均有单测；驱动启动≠成功仅非 Windows 守卫有单测，四态/UAC/刷新闭环 ④未实测；安装器 1.1.0 仅脚本文本级核对）；**硬件相关未实测**，逐项五级标注见 PRINTER_TEST_REPORT.md 第 2A.2 节 |
 | 静态扫描 8111 行 | ✅ 0 问题（2026-10-18 轮记录，第二轮未重扫） |
@@ -559,11 +604,13 @@ Windows/无设备），清单见 `docs/PRINTER_TEST_REPORT.md` 第 4 节；自�
 | GitHub 推送 | ⏳ 阻塞：token 经输入链路脱敏（401），待空格分隔令牌或本地推送 |
 
 **结论：代码与文档达到交付候选标准；第二/三轮修复（八类缺陷 + P0/P1a/P1b/P3a）
-经自动化闭环，客户端全量 EXIT=0；发布仍需在真实 Windows 完成 1.1.0 构建与
-人工验收（第 11 节、8A.2）。** 未闭环项：(1) 1.1.0 Windows 构建 + SHA-256
-回填；(2) 安装器人工交互验收；(3) 打印机真实设备硬件验收（无已验证型号，
-③真实设备实测本轮 0 项）；(4) warn 缩放确认对话框真机点击。建议发布后由
-使用方在真实 Windows 桌面环境按 2B.7/8A.2 补验。
+与第五轮 Authenticode 完整性/打印链路审计经自动化闭环，客户端全量 EXIT=0；
+发布仍需在真实 Windows 完成 1.1.0 构建与人工验收（第 11 节、8A.2、8C）。**
+未闭环项：(1) 1.1.0 Windows 构建 + SHA-256 回填；(2) 安装器人工交互验收；
+(3) 打印机真实设备硬件验收（无已验证型号，③真实设备实测本轮 0 项）；
+(4) warn 缩放确认对话框真机点击；(5) `WinVerifyTrust` 真机签名验证（吊销/链/
+UAC/失配重验，纯逻辑通过不替代）。建议发布后由使用方在真实 Windows 桌面环境
+按 2B.7/8A.2/2D.5 补验。
 
 ## 11. 剩余风险与 Windows 重建、人工验收步骤（2026-10-20 补）
 

@@ -389,11 +389,14 @@ class ElevationOutcome:
     """提权结果 + 附加系统错误码（ShellExecuteW 返回值，<=32 为错误）。
 
     ``blocked_reason`` 仅在 ``status == BLOCKED`` 时非空，记录签名闸门拦截原因。
+    ``signature`` 携带本次绑定到具体文件路径的签名验证结论（含大小/mtime
+    快照，供失配重验）；跳过签名检查或未执行时为 None。
     """
 
     status: ElevationResult
     error_code: int | None = None
     blocked_reason: str | None = None
+    signature: SignatureStatus | None = None
 
 
 def elevate_process(
@@ -420,8 +423,10 @@ def elevate_process(
     - EXE 与 MSI 分路径启动：EXE 直接以列表参数启动；MSI 经
       ``msiexec.exe /i <path>`` 可见安装界面启动，**绝不使用 /qn 静默**；
       参数一律列表传递、逐令牌引用，不做 shell 字符串拼接，无命令注入面。
-    - ``skip_signature_check=True`` 仅用于显式测试/高级排障，**UI 不暴露该
-      开关**；即便跳过，扩展名白名单闸门仍然生效，且不改变 UAC 授权流程。
+    - ``skip_signature_check=True`` **仅用于显式测试/高级排障**，生产 UI
+      路径（``print_export.py``）永不传入；**风险声明**：跳过意味着不再以
+      Authenticode 结论作为放行依据，调用方须自行承担未验证风险，扩展名
+      白名单闸门仍然生效，且不改变 UAC 授权流程。
     - ``allow_unsigned`` 仅为兼容历史调用签名保留，**不再、也绝不构成跳过
       签名校验的旁路**（传入 True 同样被签名闸门拦截）。
     - **绝不**调用 ``bcdedit``、**绝不**禁用驱动签名强制（DSE）、
@@ -451,6 +456,7 @@ def elevate_process(
 
     # 扩展名白名单闸门：无论是否跳过签名检查，非 .exe/.msi 一律阻止。
     plan = parse_elevate_request(target, args)
+    verified: SignatureStatus | None = None
     if not plan.supported:
         status = SignatureStatus(
             path=target, file_exists=False,
@@ -460,15 +466,18 @@ def elevate_process(
         return ElevationOutcome(
             ElevationResult.BLOCKED,
             blocked_reason=elevation_blocked_message(status),
+            signature=status,
         )
 
     # 签名闸门（默认开启；skip_signature_check 仅显式测试/高级排障使用）。
     if not skip_signature_check:
         status = verify_authenticode(target)
+        verified = status
         blocked, reason = should_block_elevation(status)
         if blocked:
             return ElevationOutcome(
                 ElevationResult.BLOCKED, blocked_reason=reason,
+                signature=status,
             )
 
     # Windows 真实提权（ShellExecuteW runas；EXE/MSI 分路径，列表参数）。
@@ -490,7 +499,8 @@ def elevate_process(
     result = _KIND_TO_RESULT[kind]
     if result is ElevationResult.LAUNCHED:
         # 发起成功不等于安装成功；附带官方来源提示由 UI 展示。
-        return ElevationOutcome(ElevationResult.LAUNCHED, error_code=None)
+        return ElevationOutcome(
+            ElevationResult.LAUNCHED, error_code=None, signature=verified)
     if result is ElevationResult.CANCELLED_BY_USER:
         return ElevationOutcome(
             ElevationResult.CANCELLED_BY_USER, error_code=ret)

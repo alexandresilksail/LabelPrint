@@ -766,6 +766,110 @@ LPR（RFC 1179）；数字签名/自动更新；均明确报错或不在规格�
 
 ---
 
+## 2D. 第五轮：P1 Authenticode 完整性 + 打印链路审计 + 发布文档一致性（2026-10-22）
+
+> 本组定位：**审计 + 回归 + 文档一致性**，不重写打印代码；P1 的
+> `client/printing/authenticode.py` / `driver_installer.py` / `print_export.py`
+> 与 `tests/test_driver_signature.py` 由 P1 维护，本组不修改（工程纪律）。
+> 本轮新增只读固化守卫 `tests/test_print_chain_audit.py`（19 项），不改任何既有断言。
+
+### 2D.1 终测真实输出（以本环境实测为准，禁止回填历史数字）
+
+```bash
+$ QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q
+832 passed, 2 skipped in 3.40s        （客户端，收集 834，EXIT=0）
+
+$ python3 -m pytest tests_server/ -q
+167 passed, 1 warning in 46.04s         （服务端，收集 167，EXIT=0）
+```
+
+- 客户端较第四轮（753 passed / 2 skipped）净增 79 项：P1 新增
+  `tests/test_authenticode_policy.py`（60 项）+ 本组新增
+  `tests/test_print_chain_audit.py`（19 项）；既有测试无删改。
+- 2 项 skip 与前四轮完全相同（`-rs` 原文）：
+  `test_calibration.py:226`「pdf_render 已就绪，缺失分支不再适用」（按设计
+  skip）；`test_encoder.py:65`「python-barcode 未安装，跳过第三方交叉验证」
+  （可选库缺失，非缺陷）。
+- 服务端唯一 warning 仍为 starlette `testclient.py:37` 的 anyio
+  DeprecationWarning（第三方框架，与业务无关）。
+- P1 策略文件单独运行真实输出：`pytest tests/test_authenticode_policy.py -q`
+  → **60 passed in 0.10s（EXIT=0）**；本组守卫单独运行：
+  `pytest tests/test_print_chain_audit.py -q` → **19 passed（EXIT=0）**。
+
+### 2D.2 P1 Authenticode 完整性：吊销 / 链 / HRESULT / 签名者提取 / 路径重验 / skip 隔离
+
+**落地事实（P1 文件，本组只读引用）**：`authenticode.py` 由第四轮的简单状态
+映射升级为完整的 `WinVerifyTrust` 纯策略层，并由 `tests/test_authenticode_policy.py`
+（60 项，全 passed）在 Linux 对纯逻辑固化；Windows 真机 `WinVerifyTrust`
+**本轮未执行（待 Windows）**，Linux 只测可平台无关的分类/决策/新鲜度/隔离逻辑，
+不伪造系统调用结果。
+
+| 完整性维度 | P1 实现（源码依据） | P1 测试覆盖（60 项内代表用例） |
+|---|---|---|
+| 吊销策略（整条链） | `fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN(1)`，禁止回退 `WTD_REVOKE_NONE`；明确吊销 `CERT_E_REVOKED(0x800B0105)`/显式不信任 `TRUST_E_EXPLICIT_DISTRUST(0x800B0111)` → INVALID 阻止；吊销未知 `CERT_E_REVOCATION_FAILURE(0x800B010E)`/离线 `CRYPT_E_REVOCATION_OFFLINE(0x80092013)` → NOT_VERIFIABLE 阻止（fail-closed） | `test_revocation_chain_policy_matrix`（参数化 11 态全阻止/仅 ok 放行）、`test_revocation_unknown_never_becomes_valid`、`test_revocation_check_not_disabled_in_source`（源码断言未把吊销设为 NONE） |
+| 证书链错误 | `CERT_E_UNTRUSTEDROOT(0x800B010A)`/`CERT_E_CHAINING(0x800B010B)`/`CERT_E_EXPIRED`/`TRUST_E_BAD_DIGEST` 等链/签名错误 → INVALID | `test_classify_unsigned_hr`、`test_classify_signed_negative_hr_not_misclassified`（链错误入参化） |
+| HRESULT 有符号归一化 | `normalize_hresult(hr) = hr & 0xFFFFFFFF`，解决 `restype=c_long` 有符号负值与 `0x800Bxxxx` 失配；仅 `ERROR_SUCCESS(0)` → OK | `test_normalize_hresult_signed_negative_matches_unsigned`（5 个高位码有符号/无符号对照）、`test_zero_is_only_success_anything_else_blocked`、`test_classify_signed_negative_hr_not_misclassified` |
+| 签名者提取（最佳努力） | `_extract_signer_info` 经可注入 provider（CryptQueryObject→CertEnumCertificatesInStore→CertGetNameStringW）取简单显示名；任一步失败 → publisher=None（UI 显示"未知"），不编造；时间戳不提取恒 None | `test_signer_extracted_on_success_and_freed`、`test_signer_fallback_enum_first_from_store`、`test_signer_query_failure_returns_none_no_fabrication`、`test_signer_os_error_returns_none`、`test_signer_blank_display_name_returns_none`、`test_non_ok_status_publisher_none_and_ui_shows_unknown`、`test_ok_with_extracted_publisher_shows_real_name` |
+| 路径绑定 / 内容失配重验 | `SignatureStatus` 绑定 `path` + `file_size`/`file_mtime_ns` 快照；`signature_stale()` 在路径变更/文件删除/大小或 mtime 变化/快照缺失时返回 True 强制重验，禁止复用上一文件旧结果；UI 提交前 `signature_stale` 复核 | `test_stale_false_when_unchanged`、`test_stale_true_when_size_changed`、`test_stale_true_when_mtime_changed`、`test_stale_true_when_file_deleted`、`test_stale_true_when_status_none`、`test_stale_true_when_path_changed`、`test_stale_true_when_snapshot_missing` |
+| skip 隔离 | 生产 UI（`print_export.py`）源码不得出现 `skip_signature_check=True`；`elevate_process(skip_signature_check=True)` 在 Linux 仍被平台守卫抛 `UNSUPPORTED_PLATFORM`，不构成旁路；扩展名白名单闸门即使 skip 也生效 | `test_print_export_never_passes_skip_signature_check_true`（源码扫描）、`test_elevate_process_skip_flag_still_guarded_on_linux` |
+| Windows 真实实现字面量（非占位/mock） | `WTD_STATEACTION_VERIFY/CLOSE`、`dwStateAction`、`cbStruct`、`WTD_REVOKE_WHOLECHAIN`、`CryptQueryObject/CertGetNameStringW/CertCloseStore/CertFreeCertificateContext`、`restype=c_long` 真实存在；EXE/MSI 同一验证入口 | `test_windows_branch_real_implementation_literals`、`test_exe_msi_share_verify_entry_on_linux_raises`（exe/msi 大小写 4 态 Linux 一致抛错） |
+
+> **诚信声明**：以上为 Linux 纯逻辑/源码层自动化。`WinVerifyTrust` 真实调用、
+> 证书链在线校验、吊销服务器可达性、UAC 提权交互均须在 **Windows 真机**执行，
+> 本轮未执行，不得把纯逻辑通过写成签名真机验证通过。
+
+### 2D.3 打印链路审计六项结论（只读审计，全部通过，无违规需修复）
+
+审计方法：源码 grep/import 级核对 + 既有行为测试（全绿）+ 本轮新增
+`tests/test_print_chain_audit.py`（19 项）固化。逐项结论：
+
+| # | 审计点 | 结论 | 证据（源码 / 既有测试 / 本轮守卫） |
+|---|---|---|---|
+| 1 | 模板份数唯一展开，任务份数不进 PDF | **通过** | `pdf.py:298-302` 仅一处 `for _ in range(copies)` 按 `template.copies` 展开；`render_label_sheet_pdf` 签名（`pdf.py:190-202`）无 `copies` 参数；生产调用 `print_export.py:1062`（通用队列）与 `:1513`（导出 PDF）均传原始 `items`；`:1480` 的 `expanded` 仅喂屏幕预览 `preview.set_data`，不入渲染器。既有 `test_print_pdf_semantics.test_copies_matrix_template_only`；守卫 `test_render_signature_has_no_copies_param` / `test_pdf_expands_template_copies_exactly_once` / `test_print_export_passes_raw_items_not_pre_expanded` |
+| 2 | 静区/模块宽/偏移/纸张/DPI 进入最终输出 | **通过** | PDF meta 回执 `quiet_modules_applied`/`quiet_zone_mm_applied`/`module_mm_applied`/`offset_x_mm`/`paper_width_mm`（`pdf.py:181-186,410-421`）；`units.mm_to_dots`/`quiet_zone_mm_to_modules`；协议 ZPL `^LH`（偏移）/`^BY`（模块宽）、TSPL `REFERENCE`（偏移）/`GAP`（间隙）；Qt `QPageSize.ExactMatch` + 单个 `setPageLayout` 原子页 + `setResolution` + 唯一 `setCopyCount`（`qt_print.py:272-286`）。既有 `test_print_pdf_semantics`/`test_print_config_semantics`/`test_adapters_content`/`test_qt_print_semantics` 全绿；守卫 `test_pdf_meta_reports_applied_quiet_module_offset_paper` / `test_units_provide_mm_dots_and_quiet_conversion` / `test_protocol_instructions_carry_offset_module_gap` / `test_qt_print_atomic_layout_resolution_copycount` |
+| 3 | 通用队列不保证第三方驱动物理缩放（warn 诚信） | **通过** | `scale_policy.HONESTY_REMINDER`："PDF 页面尺寸正确不代表物理标签输出尺寸正确，第三方驱动缩放不受本软件控制"；UI `ScaleRiskConfirmDialog`（`print_export.py:285-288`）同文案并允许取消中止。既有 `test_scale_risk`（含 `test_match_true_size_not_declared_warns_with_honesty`、`test_qt_resolve_converted_note_has_honesty`）；守卫 `test_scale_policy_honesty_reminder_present` / `test_ui_scale_dialog_states_pdf_correct_not_physical` |
+| 4 | 未实现通道 USB/蓝牙/LPR 明确报错 | **通过** | `UsbChannel`/`BluetoothChannel` 的 `open`/`write` 一律 `TRANSPORT_NOT_IMPLEMENTED`（`transports.py:305-317,349`）；`lpr://`/`lpr:` 在 `parse_network_endpoint` 即抛 `TRANSPORT_NOT_IMPLEMENTED`（`:87-92`）；Windows 上 USB/蓝牙同样未集成，不伪装可用。既有 `test_transport_honesty`（`test_usb_bluetooth_open/write_not_implemented`、`test_lpr_not_implemented`）；守卫 `test_usb_bluetooth_open/write_raises_not_implemented`、`test_lpr_endpoint_rejected_not_implemented` |
+| 5 | 网络发送/队列提交 ≠ 物理打印完成 | **通过** | `PrintResult.queued`/`sent` 默认文案均含"不代表物理打印完成"（`job.py:117-130`），两工厂均不返回 `PHYSICALLY_PRINTED`；协议适配器 SENT/QUEUED 文案同义。既有 `test_transport_honesty.test_sent_is_not_physically_printed`；守卫 `test_queued/sent_message_does_not_claim_physical_print`、`test_no_channel_yields_physically_printed_by_default` |
+| 6 | 未实测型号保持未验证 | **通过** | `client/printing/` 源码无 `verified_with_hardware = True` 字面量；默认 False，`from_dict` 严格解析。既有 `test_protocol_state_audit.test_source_has_no_verified_true_assignment`（全 client/ 扫描）；守卫 `test_printing_source_has_no_verified_true_assignment`（printing 包窄扫描） |
+
+> 六项均未发现违规，故**未修改任何打印代码**；仅以新守卫文件固化回归门禁。
+
+### 2D.4 第五轮五级状态区分表
+
+> 级别定义同 2A.2 / 2B.6 / 2C.5：① 自动化通过；② Windows 构建通过；
+> ③ 真实设备实测；④ 尚未实测；⑤ 尚未实现。
+
+| 事项 | 本轮实际级别 | 依据 / 待办 |
+|---|---|---|
+| P1 Authenticode 完整性（吊销/链/HRESULT 归一化/签名者提取/失配重验/skip 隔离） | **① 自动化通过（纯逻辑/源码层）**；签名真机 ④ | `test_authenticode_policy.py` 60 项全过；`WinVerifyTrust` 真机未执行 |
+| 打印链路六项审计（份数/几何贯通/缩放诚信/通道诚实/状态语义/未验证守卫） | **① 自动化通过** | 源码审计通过 + `test_print_chain_audit.py` 19 项 + 既有行为测试全绿 |
+| 客户端全量回归 | **① 自动化通过** | 832 passed / 2 skipped，收集 834，EXIT=0 |
+| 服务端全量回归 | **① 自动化通过** | 167 passed / 0 skipped，1 warning，EXIT=0 |
+| **Windows 真机 WinVerifyTrust 签名验证** | **④ 未执行（待 Windows）** | Linux 无 wintrust；在线链校验/吊销可达/UAC 待真机 |
+| **1.1.0 Windows 构建（exe/便携包/安装包）** | **⑤ 尚未实现（未构建）+ ④ 尚未实测** | Linux 无 PyInstaller win 产物/ISCC；SHA-256 不存在，禁止编造 |
+| **真机打印（队列提交/1:1 卡尺/协议出纸/TCP 连通）** | **④ 尚未实测** | 无 Windows 队列、无设备；PDF 正确 ≠ 物理正确 |
+| USB 私有直连 / 蓝牙 SPP·BLE / LPR | **⑤ 尚未实现（按设计未做）** | 一律 `TRANSPORT_NOT_IMPLEMENTED`，不伪装可用 |
+| ③ 真实设备实测 | **本轮 0 项达到** | 无任何型号经真实设备测试，COMPATIBILITY 7.1 全"未实测" |
+| ② Windows 构建通过 | **本轮 0 项达到** | 1.1.0 未构建 |
+
+### 2D.5 本轮"未执行项"清单（禁止写成已验证）
+
+**④ 尚未实测（代码/纯逻辑就绪，目标环境未验证）**：
+
+1. **Windows 真机 `WinVerifyTrust`**：真实证书链在线校验、吊销服务器可达性、
+   明确吊销/链错误/过期/篡改的真机拦截、官方签名包放行、UAC 提权全过程、
+   文件替换后失配重验闭环；
+2. **1.1.0 Windows 构建**：PyInstaller onefile + 便携 zip + ISCC 安装包，
+   PYZ 模块核对、EXE 启动冒烟、三件 SHA-256 回填；
+3. **真机打印**：真实队列枚举/提交/取消/查询、1:1 物理尺寸卡尺复核、
+   ZPL/TSPL/CPCL 真实出纸、TCP 9100 真实连通、warn 缩放对话框真机点击；
+4. 安装向导三页交互、覆盖升级 1.0.0→1.1.0 数据保留、卸载询问两分支。
+
+**⑤ 尚未实现（按设计未做）**：USB 私有裸协议直连、蓝牙 SPP/BLE 裸直连、
+LPR（RFC 1179）；代码自身数字签名证书/自动更新。
+
+---
+
 ## 3. 十类要求覆盖点逐一说明
 
 > 每一项均注明：在哪里被覆盖、以什么形式、自动化覆盖到哪一层、
@@ -1046,14 +1150,15 @@ block/warn 分级与取消选项、P3a 四态与 verified 守卫均有自动化�
 ③真实设备实测本轮均为 0 项；硬件验收以第 4 节清单在 Windows 人工执行为准。
 第一轮 456/167 历史记录见 2.1/2.2。**
 
-**结论（第四轮 2026-10-22，最新以此为准）：自动化 753 passed / 2 skipped
-（客户端，收集 755，EXIT=0，连跑两次稳定，无 QThread Destroyed/abort）+
+**结论（第五轮 2026-10-22，最新以此为准）：自动化 832 passed / 2 skipped
+（客户端，收集 834，EXIT=0，连跑稳定，无 QThread Destroyed/abort）+
 167 passed（服务端，EXIT=0，1 条第三方 anyio 告警）全部通过，0 failed
-0 error；2 项跳过为已说明的环境/设计原因。P0 版本统一为 1.1.0（矩阵见
-BUILD_REPORT 7.4）；P1 Authenticode 签名闸门 42 项新增测试全过；本组
-完成 spec 核验并只补不删 14 条 hiddenimports（见 2C.4）。②Windows 构建
-通过与 ③真实设备实测本轮均为 0 项：1.1.0 未构建、无任何型号经真机测试；
-USB/蓝牙裸直连、LPR 为 ⑤尚未实现。Windows 构建/自检按 2C.4-D 与
-PRINTER_INSTALLATION 第 10 节执行，真机逐型号登记 PRINTER_COMPATIBILITY
-7.1 空表。第三轮 711/167、第二轮 597/167、第一轮 456/167 历史记录见
-2B / 2A / 2.1-2.4。**
+0 error；2 项跳过为已说明的环境/设计原因。本轮 P1 Authenticode 完整性
+（吊销整条链/链错误/HRESULT 有符号归一化/签名者提取/路径失配重验/skip 隔离）
+由 `test_authenticode_policy.py` 60 项纯逻辑覆盖；打印链路六项审计通过、
+无违规，新增守卫 `test_print_chain_audit.py` 19 项（见 2D）。②Windows 构建
+通过与 ③真实设备实测本轮均为 0 项：1.1.0 未构建、`WinVerifyTrust` 未在真机
+执行、无任何型号经真机打印测试；USB/蓝牙裸直连、LPR 为 ⑤尚未实现。
+Windows 构建/自检按 2C.4-D 与 PRINTER_INSTALLATION 第 10 节执行，真机签名与
+逐型号打印登记 PRINTER_COMPATIBILITY 7.1 空表。第四轮 753/167、第三轮
+711/167、第二轮 597/167、第一轮 456/167 历史记录见 2C / 2B / 2A / 2.1-2.4。**

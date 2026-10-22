@@ -143,6 +143,11 @@ Successful compile (35.000 sec).
   服务端 167 passed（EXIT=0），仅证明逻辑/守卫在 Linux 通过；**不等于
   1.1.0 已构建**。完整 Windows 发布门禁手册（含双套件期望退出码、构建、
   哈希回填、升级/卸载、真机验收空表）见 `docs/PRINTER_TEST_REPORT.md` 2B.7。
+- 2026-10-22 第五轮自动化复测（P1 Authenticode 完整性 60 项 + 打印链路审计
+  守卫 19 项）：客户端 **832 passed / 2 skipped（EXIT=0）**、服务端
+  **167 passed（EXIT=0）**，仅覆盖纯逻辑/校验/守卫，**不等于 1.1.0 已构建**；
+  `WinVerifyTrust` 真机签名验证、1.1.0 产物与真机打印均未执行，详见
+  `docs/PRINTER_TEST_REPORT.md` 2D。
 - 当前仅完成：`installer/codelabel.iss` 版本号升至 1.1.0、驱动页文案追加两条，
   以及脚本文本级（grep / begin-end 配对 / 字符串拼接）核对，未执行编译。
 
@@ -155,7 +160,7 @@ REM 1) 安装依赖（含打印子系统新增的 pypdf；pywin32 仅在 win32 �
 pip install -r requirements.txt
 
 REM 1.5) 完整自动化测试（期望退出码 0；任一非 0 停止发布）
-python -m pytest tests/ -q            REM 期望 711 passed, 2 skipped
+python -m pytest tests/ -q            REM 期望 832 passed, 2 skipped
 python -m pytest tests_server/ -q     REM 期望 167 passed, 1 warning
 
 REM 2) PyInstaller onefile + 便携 zip（脚本已固化 spec 与 hiddenimports）
@@ -266,7 +271,7 @@ git push origin v1.1.0
 
 | 项目 | 级别 | 说明 |
 |---|---|---|
-| 打印子系统逻辑（适配器 ZPL/TSPL/CPCL/registry/transports、calibration、config_store、pdf_render、driver_installer 决策与指引） | ① 自动化通过 | 2026-10-22 第三轮：`pytest tests/` 711 passed, 2 skipped（EXIT=0）、`pytest tests_server/` 167 passed（EXIT=0）；2 项 skip 为环境/设计原因 |
+| 打印子系统逻辑（适配器 ZPL/TSPL/CPCL/registry/transports、calibration、config_store、pdf_render、driver_installer 决策与指引、authenticode 纯逻辑） | ① 自动化通过 | 2026-10-22 第五轮：`pytest tests/` 832 passed, 2 skipped（EXIT=0）、`pytest tests_server/` 167 passed（EXIT=0）；2 项 skip 为环境/设计原因；`WinVerifyTrust` 真机未执行 |
 | 第三轮修复（P0 RunLater 生命周期 / P1a 静区配置传递与 unapplied / P1b 缩放 block·warn 分级 / P3a 四态与 verified 守卫） | ① 自动化通过 | 新增 4 测试文件 114 项；明细见 PRINTER_TEST_REPORT.md 2B |
 | warn 缩放确认对话框真机交互（取消/继续） | ④ 尚未实测 | 分级逻辑 ① 通过，离屏走默认分支，未在真实桌面点击 |
 | 1.0.0 单文件 exe / 便携包 / 安装包（历史） | ② Windows 构建通过 | 2026-10-18 真实 Windows 构建，属改造前产物，仅供存档 |

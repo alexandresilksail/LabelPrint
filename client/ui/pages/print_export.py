@@ -39,7 +39,9 @@ from ...printing.authenticode import (
     VerificationStatus,
     describe_signature_status,
     elevation_blocked_message,
+    file_snapshot,
     should_block_elevation,
+    signature_stale,
     verify_authenticode,
 )
 from ...printing.driver_installer import (
@@ -151,6 +153,7 @@ class DriverGuidanceDialog(QDialog):
             "安装程序 (*.exe *.msi);;所有文件 (*)")
         if not path:
             return
+        # 选择新文件（路径变更）必须重新验证，禁止复用上一个文件的旧结果。
         self.installer_path = path
         self.path_label.setText(f"已选择：{path}")
         self._refresh_signature_status(path)
@@ -159,16 +162,20 @@ class DriverGuidanceDialog(QDialog):
         """提权前展示签名状态；未签名/无效/无法验证/类型不支持 → 禁用安装按钮。
 
         非 Windows（验证能力不可用）时按 not_verifiable 谨慎阻止，绝不伪装通过。
+        结果绑定具体文件路径与大小/mtime 快照，供失配重验。
         """
         try:
             status = verify_authenticode(path)
         except PrintError as exc:
+            size, mtime_ns = file_snapshot(path)
             status = SignatureStatus(
                 path=path,
-                file_exists=os.path.isfile(path),
+                file_exists=size is not None,
                 verification=VerificationStatus.NOT_VERIFIABLE,
                 failure_reason=exc.user_message,
                 is_msi=path.lower().endswith(".msi"),
+                file_size=size,
+                file_mtime_ns=mtime_ns,
             )
         self._signature = status
         self.signature_label.setText(describe_signature_status(status))
@@ -185,7 +192,16 @@ class DriverGuidanceDialog(QDialog):
         path = getattr(self, "installer_path", "")
         if not path:
             return
-        # 防御性复核：即便面板已放行，elevate_process 内部仍会再跑一次签名闸门。
+        # 内容/路径失配（文件被替换、重写、删除）必须重新验证，禁止复用旧结果。
+        if signature_stale(getattr(self, "_signature", None), path):
+            self._refresh_signature_status(path)
+            blocked, _reason = should_block_elevation(self._signature)
+            if blocked:
+                self.result_label.setText(
+                    "文件已变化或签名结果失效，已重新检查并阻止提权。")
+                return
+        # 防御性复核：即便面板已放行，elevate_process 内部仍会再跑一次签名闸门；
+        # 正式 UI 路径永不传 skip_signature_check（默认 False）。
         try:
             outcome = elevate_process(path, [])
         except PrintError as exc:
