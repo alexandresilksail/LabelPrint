@@ -148,6 +148,11 @@ Successful compile (35.000 sec).
   **167 passed（EXIT=0）**，仅覆盖纯逻辑/校验/守卫，**不等于 1.1.0 已构建**；
   `WinVerifyTrust` 真机签名验证、1.1.0 产物与真机打印均未执行，详见
   `docs/PRINTER_TEST_REPORT.md` 2D。
+- 2026-10-22 第六轮自动化复测（P1 SHA-256 指纹绑定/preflight 24 项 + 凭据
+  专项扫描 + spec 复核）：客户端 **856 passed / 2 skipped（EXIT=0）**、服务端
+  **167 passed（EXIT=0）**，仅覆盖纯逻辑/校验/守卫，**不等于 1.1.0 已构建**；
+  仓库内无真实凭据需吊销、历史无需重写（`docs/SECURITY_AUDIT.md` 第六节），
+  详见 `docs/PRINTER_TEST_REPORT.md` 2E。
 - 当前仅完成：`installer/codelabel.iss` 版本号升至 1.1.0、驱动页文案追加两条，
   以及脚本文本级（grep / begin-end 配对 / 字符串拼接）核对，未执行编译。
 
@@ -160,7 +165,7 @@ REM 1) 安装依赖（含打印子系统新增的 pypdf；pywin32 仅在 win32 �
 pip install -r requirements.txt
 
 REM 1.5) 完整自动化测试（期望退出码 0；任一非 0 停止发布）
-python -m pytest tests/ -q            REM 期望 832 passed, 2 skipped
+python -m pytest tests/ -q            REM 期望 856 passed, 2 skipped（第六轮实测）
 python -m pytest tests_server/ -q     REM 期望 167 passed, 1 warning
 
 REM 2) PyInstaller onefile + 便携 zip（脚本已固化 spec 与 hiddenimports）
@@ -260,7 +265,16 @@ git push origin v1.1.0
 | `pypdf>=5.0.0` | PDF 页面尺寸测量与缩放检测（`client/printing/pdf_render.py`），无平台标记，跨平台安装 |
 | `pywin32>=306; sys_platform == 'win32'` | Windows 打印队列/驱动枚举 `win32print`，带 win32 marker，Linux 不安装 |
 
-> 本次仅核对上述声明是否齐备，**未修改 `.spec` 与 `requirements.txt` 任何一行**。
+### 8.3 stdlib 与系统 DLL 依赖复核（2026-10-22 第六轮，未改 spec）
+
+| 项 | 结论 |
+|---|---|
+| `hashlib` / `os` / `sys` / `dataclasses` / `datetime` / `enum` | Python 标准库，PyInstaller 自动打包，**无需 hiddenimports** |
+| `ctypes`（含 `wintypes`） | Python 标准库，Windows 分支内惰性导入，自动可用，**无需 hiddenimports** |
+| `wintrust.dll` | Windows 运行时系统 DLL（`ctypes.windll.wintrust` 按需加载），**不打包、不应打包**；spec `binaries=[]` 正确 |
+| `client.printing.authenticode` | 已在 spec hiddenimports（第四轮声明，第六轮复核在位） |
+
+> 本次仅核对上述声明是否齐备，**未修改 `.spec` 与 `requirements.txt` 任何一行**（只加不删原则下无缺项）。
 
 ## 9. 五级状态标注（本报告涉及项）
 
@@ -271,7 +285,7 @@ git push origin v1.1.0
 
 | 项目 | 级别 | 说明 |
 |---|---|---|
-| 打印子系统逻辑（适配器 ZPL/TSPL/CPCL/registry/transports、calibration、config_store、pdf_render、driver_installer 决策与指引、authenticode 纯逻辑） | ① 自动化通过 | 2026-10-22 第五轮：`pytest tests/` 832 passed, 2 skipped（EXIT=0）、`pytest tests_server/` 167 passed（EXIT=0）；2 项 skip 为环境/设计原因；`WinVerifyTrust` 真机未执行 |
+| 打印子系统逻辑（适配器 ZPL/TSPL/CPCL/registry/transports、calibration、config_store、pdf_render、driver_installer 决策与指引、authenticode 纯逻辑、SHA-256 指纹绑定/preflight） | ① 自动化通过 | 2026-10-22 第六轮：`pytest tests/` **856 passed, 2 skipped**（EXIT=0）、`pytest tests_server/` **167 passed**（EXIT=0）；2 项 skip 为环境/设计原因；`WinVerifyTrust` 真机未执行 |
 | 第三轮修复（P0 RunLater 生命周期 / P1a 静区配置传递与 unapplied / P1b 缩放 block·warn 分级 / P3a 四态与 verified 守卫） | ① 自动化通过 | 新增 4 测试文件 114 项；明细见 PRINTER_TEST_REPORT.md 2B |
 | warn 缩放确认对话框真机交互（取消/继续） | ④ 尚未实测 | 分级逻辑 ① 通过，离屏走默认分支，未在真实桌面点击 |
 | 1.0.0 单文件 exe / 便携包 / 安装包（历史） | ② Windows 构建通过 | 2026-10-18 真实 Windows 构建，属改造前产物，仅供存档 |

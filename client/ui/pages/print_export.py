@@ -37,6 +37,7 @@ from ...printing.authenticode import (
     SIGNED_OK_CAUTION,
     SignatureStatus,
     VerificationStatus,
+    compute_file_sha256,
     describe_signature_status,
     elevation_blocked_message,
     file_snapshot,
@@ -162,7 +163,8 @@ class DriverGuidanceDialog(QDialog):
         """提权前展示签名状态；未签名/无效/无法验证/类型不支持 → 禁用安装按钮。
 
         非 Windows（验证能力不可用）时按 not_verifiable 谨慎阻止，绝不伪装通过。
-        结果绑定具体文件路径与大小/mtime 快照，供失配重验。
+        结果绑定具体文件路径、大小/mtime 快照与 SHA-256 内容指纹，供失配重验
+        与提权前 preflight 一致性确认。
         """
         try:
             status = verify_authenticode(path)
@@ -176,6 +178,7 @@ class DriverGuidanceDialog(QDialog):
                 is_msi=path.lower().endswith(".msi"),
                 file_size=size,
                 file_mtime_ns=mtime_ns,
+                sha256=compute_file_sha256(path),
             )
         self._signature = status
         self.signature_label.setText(describe_signature_status(status))

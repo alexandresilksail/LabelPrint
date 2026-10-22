@@ -37,10 +37,24 @@ Windows 验证依据（MS Learn）：
 诚信红线：未知状态绝不转有效；不虚构签名者名称、不虚构吊销结果；
 Windows 真机 WinVerifyTrust 结果待 Windows 执行验证，Linux 纯逻辑测试
 不替代真机验证。
+
+文件绑定与竞态（TOCTOU）说明：
+- ``file_size`` / ``file_mtime_ns`` 只是**常见变化检测**线索：大小与修改时间
+  **不是内容身份的密码学证明**，攻击者可以伪造相同大小、相同时间戳替换文件；
+  因此签名结果额外绑定 **SHA-256 内容指纹**（:func:`compute_file_sha256`，
+  64KB 分块读取）作为内容身份强校验。
+- :func:`preflight_launch` 在发起提权启动前，把 realpath 消解符号链接后的
+  路径 / 大小 / mtime / SHA-256 与验证快照逐项比对，任一不一致即阻止启动，
+  要求重新验证；不提供“继续冒险启动”的旁路。
+- 校验与启动之间仍存在理论 TOCTOU 窗口（OS 级残余风险，本模块不引入跨进程
+  锁——跨进程锁超出范围）；启动改用 ``os.path.realpath`` 规范化绝对路径，
+  收窄临时目录/共享目录/路径替换面。Windows 真机符号链接/交接点行为待
+  Windows 执行验证。
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from dataclasses import dataclass, field
@@ -143,8 +157,13 @@ class SignatureStatus:
         failure_reason: 失败/阻止的人类可读原因；ok 时为 None。
         is_msi: 是否为 MSI 安装包（决定启动方式）。
         checked_at: 检查时刻（UTC ISO8601）；纯逻辑构造时可为空串。
-        file_size: 验证时刻的文件字节数快照（用于失配重验）；未知为 None。
-        file_mtime_ns: 验证时刻的 ``st_mtime_ns`` 快照（用于失配重验）；未知为 None。
+        file_size: 验证时刻的文件字节数快照（仅作常见变化检测线索；
+                   **不是内容身份的密码学证明**，可被伪造）；未知为 None。
+        file_mtime_ns: 验证时刻的 ``st_mtime_ns`` 快照（仅作常见变化检测线索；
+                       **不是内容身份的密码学证明**，可被伪造）；未知为 None。
+        sha256: 验证时刻计算的 SHA-256 内容指纹（64KB 分块读取，十六进制），
+                是绑定到具体文件内容的强身份校验；读取失败/未知为 None。
+                非 ok 状态同样尽量携带指纹，供提权前一致性比对。
     """
 
     path: str
@@ -158,6 +177,7 @@ class SignatureStatus:
     checked_at: str = ""
     file_size: int | None = None
     file_mtime_ns: int | None = None
+    sha256: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -257,11 +277,39 @@ def classify_winverifytrust(hr: int) -> tuple[VerificationStatus, str | None]:
 
 
 # ---------------------------------------------------------------------------
-# 纯逻辑：文件快照与签名结果新鲜度（路径绑定 + 内容变更重验）
+# 纯逻辑：文件快照、SHA-256 内容指纹与签名结果新鲜度（路径绑定 + 内容变更重验）
 # ---------------------------------------------------------------------------
+# 64KB 分块读取：避免一次性读入大安装包，且分块/一次读结果一致（可单测）。
+_FINGERPRINT_CHUNK_SIZE = 64 * 1024
+
+
+def compute_file_sha256(path: str) -> str | None:
+    """计算文件内容的 SHA-256 十六进制指纹（64KB 分块流式读取）。
+
+    这是**内容身份的密码学强校验**：相同内容必然相同指纹，不同内容（即使
+    大小、mtime 被伪造得完全一致）指纹必然不同。文件不存在 / 不可读 → None，
+    由调用方按失配处理（fail-closed，绝不把 None 当“匹配”）。
+
+    纯函数（仅本地文件 IO），Linux 可直接单测。
+    """
+    target = str(path or "")
+    if not target:
+        return None
+    try:
+        digest = hashlib.sha256()
+        with open(target, "rb") as fh:
+            for chunk in iter(lambda: fh.read(_FINGERPRINT_CHUNK_SIZE), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
 def file_snapshot(path: str) -> tuple[int | None, int | None]:
     """读取 ``(st_size, st_mtime_ns)`` 作为签名结果绑定快照。
 
+    注意：大小 / 修改时间**不是内容身份的密码学证明**，只能用于发现常见的
+    重写/改动；防“同大小同时间戳替换”必须依赖 :func:`compute_file_sha256`。
     文件不存在 / 不可读 → ``(None, None)``（由调用方按失配处理）。
     """
     try:
@@ -269,6 +317,19 @@ def file_snapshot(path: str) -> tuple[int | None, int | None]:
     except OSError:
         return None, None
     return st.st_size, st.st_mtime_ns
+
+
+def file_identity_snapshot(path: str) -> tuple[int | None, int | None, str | None]:
+    """读取 ``(st_size, st_mtime_ns, sha256)`` 完整身份快照。
+
+    大小/mtime 仅作常见变化检测；``sha256`` 才是内容身份强校验。
+    文件不存在 / 不可读 → 三元组全部为 None（由调用方按失配处理）。
+    """
+    target = str(path or "")
+    size, mtime_ns = file_snapshot(target)
+    if size is None:
+        return None, None, None
+    return size, mtime_ns, compute_file_sha256(target)
 
 
 def signature_stale(status: SignatureStatus | None, path: str) -> bool:
@@ -280,7 +341,10 @@ def signature_stale(status: SignatureStatus | None, path: str) -> bool:
     - 路径为空，或与结果记录的 ``path`` 不一致（换了文件）；
     - 文件不存在（被删除/移动）；
     - 结果未携带大小/mtime 快照（无法证明未变，保守重验）；
-    - 当前大小或 ``mtime_ns`` 与记录快照不一致（内容被改动/重写）。
+    - 当前大小或 ``mtime_ns`` 与记录快照不一致（内容被改动/重写）；
+    - 结果携带 SHA-256 指纹时，当前指纹与记录不一致（**同大小同时间戳的
+      内容替换也必然被捕获**）；未携带指纹（旧结果）时回退 size/mtime 判定，
+      严格的“缺指纹即重验”由 :func:`preflight_launch` 在启动前执行。
 
     全部一致才返回 False。纯函数，Linux 可直接单测。
     """
@@ -297,7 +361,73 @@ def signature_stale(status: SignatureStatus | None, path: str) -> bool:
         return True  # 旧结果未携带快照，保守重验
     if size != status.file_size or mtime_ns != status.file_mtime_ns:
         return True
+    # 密码学内容指纹：携带即强校验（捕获同大小/同时间戳替换）；
+    # 未携带（旧结果）回退上面的 size/mtime 判定，保持向后兼容。
+    if status.sha256 is not None and compute_file_sha256(target) != status.sha256:
+        return True
     return False
+
+
+# 提权前一致性阻止原因（统一文案，preflight 与 UI 复用）
+PREFLIGHT_CHANGED_REASON = "文件内容已变化，需重新验证签名后再启动。"
+
+
+def preflight_launch(path: str, status: SignatureStatus | None) -> tuple[bool, str | None]:
+    """提权启动前的最终一致性确认（独立纯函数，可单测）。
+
+    把 ``path`` 经 ``os.path.realpath`` 消解符号链接后，与验证快照逐项比对：
+
+    1. realpath 路径一致（链接指向同一真实文件才算同一文件；链接被改指他处
+       即阻止，避免“验证的是 A，启动的是 B”）；
+    2. 文件大小一致；
+    3. ``st_mtime_ns`` 一致；
+    4. SHA-256 内容指纹一致（密码学强校验，捕获同大小/同时间戳替换）。
+
+    任一不一致 / 缺失 / 文件不可读 / ``status`` 为 None → 返回
+    ``(False, reason)`` 阻止启动，调用方必须重新验证；**不提供继续冒险启动
+    的旁路**。全部一致 → ``(True, None)``。
+
+    残余风险（如实声明）：本函数与随后的 ``ShellExecuteW`` 之间仍存在理论
+    TOCTOU 窗口，属 OS 级残余风险；本模块不引入跨进程锁（超出范围），启动侧
+    另以 realpath 规范化绝对路径收窄路径替换面。Windows 真机符号链接/交接点
+    行为待 Windows 执行验证。
+    """
+    if status is None:
+        return False, "尚无签名验证结果，无法确认文件内容，需重新验证后再启动。"
+
+    requested = str(path or "").strip()
+    if not requested:
+        return False, "未提供安装程序路径，需重新验证签名后再启动。"
+
+    # realpath 消解符号链接/相对路径/冗余分隔符后再比较，而非比较用户原始串。
+    try:
+        requested_real = os.path.realpath(requested)
+        recorded_real = os.path.realpath(status.path)
+    except OSError:
+        return False, PREFLIGHT_CHANGED_REASON
+
+    if requested_real != recorded_real:
+        return False, "文件路径已变化（符号链接被改指/文件被移动替换），" + PREFLIGHT_CHANGED_REASON
+
+    size, mtime_ns, digest = file_identity_snapshot(requested_real)
+    if size is None:
+        return False, "文件不存在或不可读，" + PREFLIGHT_CHANGED_REASON
+
+    # 快照不完整（缺大小/mtime）→ 无法逐项比对，保守阻止重验。
+    if status.file_size is None or status.file_mtime_ns is None:
+        return False, "签名结果快照不完整，无法确认文件未被替换，需重新验证。"
+    if size != status.file_size:
+        return False, "文件大小已变化，" + PREFLIGHT_CHANGED_REASON
+    if mtime_ns != status.file_mtime_ns:
+        return False, "文件修改时间已变化，" + PREFLIGHT_CHANGED_REASON
+
+    # 密码学指纹是内容身份的最终依据：缺失或不一致一律阻止。
+    if status.sha256 is None:
+        return False, "签名结果未携带内容指纹，无法证明文件未被替换，需重新验证。"
+    if digest is None or digest != status.sha256:
+        return False, "文件内容指纹（SHA-256）不匹配，" + PREFLIGHT_CHANGED_REASON
+
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +443,19 @@ def _build_status(
     signer: str | None = None,
     timestamp: str | None = None,
     is_msi: bool = False,
+    sha256: str | None = None,
 ) -> SignatureStatus:
-    """统一构造 :class:`SignatureStatus` 并绑定磁盘文件快照。"""
-    size, mtime_ns = file_snapshot(path) if file_exists else (None, None)
+    """统一构造 :class:`SignatureStatus` 并绑定磁盘文件快照（含 SHA-256 指纹）。
+
+    ``sha256`` 显式传入时优先采用（Windows 路径在调用 WinVerifyTrust **之前**
+    先算指纹，保证绑定的是被验证那一刻的内容）；否则现场读取完整身份快照。
+    """
+    if file_exists:
+        size, mtime_ns, digest = file_identity_snapshot(path)
+        if sha256 is None:
+            sha256 = digest
+    else:
+        size, mtime_ns, sha256 = None, None, None
     return SignatureStatus(
         path=path,
         file_exists=file_exists,
@@ -328,6 +468,7 @@ def _build_status(
         checked_at=_now_iso(),
         file_size=size,
         file_mtime_ns=mtime_ns,
+        sha256=sha256,
     )
 
 
@@ -343,7 +484,9 @@ def verify_authenticode(path: str) -> SignatureStatus:
 
     Windows 上通过 ``wintrust.dll!WinVerifyTrust``（通用验证动作，吊销检查
     WTD_REVOKE_WHOLECHAIN）对 EXE / MSI 分别走各自 SIP 完成验证，结果经
-    :func:`classify_winverifytrust` 映射到 :class:`VerificationStatus`。
+    :func:`classify_winverifytrust` 映射到 :class:`VerificationStatus`；
+    验证前先计算 SHA-256 内容指纹并随结果绑定（非 ok 状态也尽量携带），
+    供 :func:`preflight_launch` 启动前复核。
     """
     target = str(path or "").strip()
     if not target:
@@ -408,6 +551,10 @@ def _verify_with_winverifytrust(path: str, *, is_msi: bool) -> SignatureStatus:
     """
     import ctypes
     from ctypes import wintypes
+
+    # 先算内容指纹再调用 WinVerifyTrust：把签名结论绑定到“被验证那一刻”的
+    # 具体字节；随后 preflight_launch 用同一指纹在启动前复核，捕获验证后替换。
+    pre_verify_digest = compute_file_sha256(path)
 
     # WINTRUST_ACTION_GENERIC_VERIFY_V2 GUID {00AAC56B-CD44-11d0-8CC2-00C04FC295EE}
     # MS Learn: winverifytrust.h / WintrustAction GUID 常量说明。
@@ -488,6 +635,7 @@ def _verify_with_winverifytrust(path: str, *, is_msi: bool) -> SignatureStatus:
                 verification=VerificationStatus.NOT_VERIFIABLE,
                 failure_reason=f"签名验证调用被系统拒绝（{exc}），已默认阻止提权。",
                 is_msi=is_msi,
+                sha256=pre_verify_digest,
             )
 
         verification, reason = classify_winverifytrust(hr_signed)
@@ -504,6 +652,7 @@ def _verify_with_winverifytrust(path: str, *, is_msi: bool) -> SignatureStatus:
             failure_reason=reason,
             publisher=publisher, signer=signer, timestamp=timestamp,
             is_msi=is_msi,
+            sha256=pre_verify_digest,
         )
     finally:
         # 无论验证成功或失败，都关闭验证状态句柄；None/0 跳过。
@@ -868,6 +1017,9 @@ def describe_signature_status(status: SignatureStatus) -> str:
     publisher = status.publisher or "未知（未提取到发布者，请核对官方来源）"
     lines.append(f"发布者：{publisher}")
     lines.append(f"文件路径：{status.path}")
+    if status.sha256:
+        # 仅展示短前缀供人工比对，完整 64 位指纹保存在状态对象内供机器复核。
+        lines.append(f"内容指纹：已绑定 SHA-256（{status.sha256[:12]}…）")
     if status.timestamp:
         lines.append(f"签名时间戳：{status.timestamp}")
     if status.failure_reason:

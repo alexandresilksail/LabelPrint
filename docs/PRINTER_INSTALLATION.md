@@ -17,6 +17,10 @@
   EXIT=0）、服务端 167 passed（EXIT=0）；这仅代表逻辑/守卫在 Linux 通过，
   **不代表 1.1.0 已构建或已在真机验证**。第三轮 711/167 历史见
   `docs/PRINTER_TEST_REPORT.md` 2B。
+- 2026-10-22 第六轮自动化复测（SHA-256 指纹绑定/preflight/TOCTOU 收窄 +
+  凭据扫描 + spec 复核）：客户端 **856 passed / 2 skipped（EXIT=0）**、服务端
+  **167 passed（EXIT=0）**；同样仅代表 Linux 纯逻辑通过，**不代表 1.1.0 已
+  构建或已在真机验证**，真机替换拦截/符号链接·交接点/UAC 见 5.2。
 
 ## 1. 应用安装（无需管理员权限）
 
@@ -109,6 +113,29 @@ Get-Printer | Format-Table -AutoSize Name,DriverName,PortName,PrinterStatus
 - 本软件与安装包**不会修改 Windows 驱动签名检查（DSE）**、组策略或任何安全设置，
   也不提供签名旁路。
 
+### 5.2 签名指纹绑定与提权前一致性（第六轮，真实 Windows 验证步骤）
+
+> 级别标注：指纹计算、preflight 逐项比对为 **① 自动化通过（纯逻辑，
+> `tests/test_file_binding.py` 24 项）**；下列真机行为为 **④ 待 Windows 实测**。
+
+- **签名结论绑定 SHA-256 内容指纹**：验证安装包时先计算并绑定文件内容的
+  SHA-256（64KB 分块流式读取）。大小/修改时间只是常见变化检测线索，**不是
+  内容身份的密码学证明**（可被伪造为同大小同时间戳）；SHA-256 才是内容强校验。
+- **提权前 `preflight_launch` 复核**：发起 `ShellExecuteW(runas)` 之前，把
+  realpath 消解符号链接后的路径、大小、mtime、SHA-256 与验证快照逐项比对；
+  任一不一致（含同大小同时间戳替换、改大小、改 mtime、文件删除、符号链接
+  改指、缺指纹）即 **BLOCKED**，要求重新验证签名，**无"继续冒险启动"旁路**。
+- **竞态（TOCTOU）如实声明**：验证 → preflight → 提权在函数内顺序执行，窗口
+  已收窄到两次读之间；preflight 与最终提权调用之间仍存在 OS 级残余窗口，本
+  实现有意不引入跨进程锁。
+- **真实 Windows 验证步骤（待执行，逐项留档）**：
+  1. 对官方签名安装包走应用内辅助提权，观察 `LAUNCHED` 且 UAC 正常弹出；
+  2. 验证通过后、启动前替换/篡改安装包（含保持同大小同时间戳），确认被
+     BLOCKED 并提示"文件内容已变化，需重新验证签名"，无继续启动选项；
+  3. 符号链接/junction 改指到另一文件时确认被 BLOCKED；
+  4. 未签名/无效/无法验证安装包确认在闸门处 BLOCKED，不发起 UAC；
+  5. 记录官方签名包放行与 UAC 全过程截图/日志。
+
 ## 6. 安全红线（不可绕过）
 
 > 级别标注：以下约束在代码与安装脚本中均已落实并有自动化/文本级核对，属
@@ -166,7 +193,7 @@ Get-Printer | Format-Table -AutoSize Name,DriverName,PortName,PrinterStatus
 |---|---|---|
 | 驱动状态决策 `detect_driver_state()`（6 状态优先级、4 条行动提示） | ① 自动化通过 | 单测覆盖；真机判定待验 |
 | 官方驱动来源表与"不编造 URL"逻辑 | ① 自动化通过 | 来源页 2026-10 人工核查；页面结构可能调整 |
-| `elevate_process` 提权启动（LAUNCHED/REQUIRES_UAC/CANCELLED/FAILED） | ① 自动化通过（分支逻辑）/ ④ 尚未实测（真机 UAC） | Linux 无法触发 Windows UAC |
+| `elevate_process` 提权启动（LAUNCHED/REQUIRES_UAC/CANCELLED/FAILED）+ preflight 指纹一致性 | ① 自动化通过（分支逻辑/preflight 纯函数）/ ④ 尚未实测（真机 UAC 与替换拦截） | Linux 无法触发 Windows UAC；SHA-256 指纹与 preflight 见 5.2 |
 | 启动成功 ≠ 安装成功的复核闭环（等待完成 → 刷新打印机 → 核对队列/驱动） | ④ 尚未实测 | 需真机走完整安装流程 |
 | 真实驱动安装、队列绑定、设备在线判定 | ④ 尚未实测 | 需真实 Windows + 真实打印机 |
 | 失败恢复流程（卸载残留 → 重启 → 官方源重装 → 队列恢复） | ④ 尚未实测 | 需真实失败环境演练 |
@@ -178,6 +205,7 @@ Get-Printer | Format-Table -AutoSize Name,DriverName,PortName,PrinterStatus
 | 安装页/设置向导人工交互（检测页/驱动页/校准页/`--printer-setup`） | ④ 尚未实测 | 见第 13 节，需 Windows + 真机 |
 | 第三轮自动化（P0/P1a/P1b/P3a） | ① 自动化通过 | 711 passed/2 skipped（EXIT=0）+ 167 passed（EXIT=0）；硬件/构建仍未执行 |
 | 第四轮自动化（P0 版本统一 / P1 签名闸门 / spec 补全） | ① 自动化通过 | 753 passed/2 skipped（收集 755，EXIT=0）+ 167 passed（EXIT=0）；新增 test_driver_signature 42 项；硬件/构建仍未执行 |
+| 第六轮自动化（SHA-256 指纹绑定 / preflight 一致性 / TOCTOU 收窄 + 凭据扫描 + spec 复核） | ① 自动化通过 / ④ 真机未实测 | 856 passed/2 skipped（EXIT=0）+ 167 passed（EXIT=0），新增 test_file_binding 24 项；真机替换拦截/符号链接·交接点/UAC 待 Windows（5.2） |
 | 数字签名、自动更新 | ⑤ 尚未实现 | 无证书 / 规格未要求 |
 
 ---

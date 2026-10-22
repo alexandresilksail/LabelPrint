@@ -3,7 +3,7 @@
 > 测试日期：第一轮 2026-10-19（打印机专项首测）；第二轮 2026-10-20（八类缺陷修复与发布验收复测）；第三轮 2026-10-22（第二轮打印审计修复：P0 线程生命周期 / P1 配置传递与缩放分级 / P3a 协议状态与 verified 守卫 + Windows 发布门禁手册）；第四轮 2026-10-22（1.1.0 最终发布阻断修复：P0 版本统一 / P1 Authenticode 签名闸门 / spec 核验补全）
 > 执行环境：Linux 沙箱（Python 3.12.11，PySide6 6.12.0，pytest 9.1.1，pypdf 5.9.0，reportlab 4.4.1；alembic 1.20.0 已装；python-barcode 未装）
 > 报告原则：所有数字取自真实命令输出，无据不写；未执行项明写"未实测/未执行"，绝不伪造。
-> 第一轮历史记录（456 passed/2 skipped）完整保留于第 2.1/2.2 节；第二轮（597/167）以第 2A 章与第 2.3/2.4 节为准；第三轮（711/167，全量退出码 0）以第 2B 章为准；**第四轮（753/2 skipped 客户端 + 167 服务端，全量退出码 0）以第 2C 章为准**。
+> 第一轮历史记录（456 passed/2 skipped）完整保留于第 2.1/2.2 节；第二轮（597/167）以第 2A 章与第 2.3/2.4 节为准；第三轮（711/167，全量退出码 0）以第 2B 章为准；第四轮（753/2 skipped 客户端 + 167 服务端）以第 2C 章为准；第五轮（832/2 skipped + 167）以第 2D 章为准；**第六轮（856/2 skipped 客户端 + 167 服务端，全量退出码 0）以第 2E 章为准（当前自动化数字）**。
 
 ---
 
@@ -870,6 +870,124 @@ LPR（RFC 1179）；代码自身数字签名证书/自动更新。
 
 ---
 
+## 2E. 第六轮：P1 指纹绑定 / 竞态收窄 + 凭据专项扫描 + spec 依赖复核（2026-10-22）
+
+> 本组定位：**回归 + 凭据审计 + spec 文本核验 + 文档同步**。P1 的
+> `client/printing/authenticode.py`、`client/printing/driver_installer.py`、
+> `client/ui/pages/print_export.py` 与新建 `tests/test_file_binding.py`
+> 由 P1 维护，本组只读引用、不修改；本组不改任何既有测试断言。
+
+### 2E.1 终测真实输出（以本环境实测为准，禁止回填历史数字）
+
+```bash
+$ QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q
+856 passed, 2 skipped in 3.10s        （客户端，收集 858，EXIT=0）
+
+$ python3 -m pytest tests_server/ -q
+167 passed, 1 warning in 37.46s      （服务端，收集 167，EXIT=0）
+```
+
+- 客户端较第五轮（832 passed / 2 skipped）净增 **24 项**：P1 新建
+  `tests/test_file_binding.py`（24 项，单独运行 `24 passed in 0.12s，EXIT=0`）；
+  既有测试无删改。
+- 服务端 167 passed 与第五轮一致；唯一 warning 仍为 starlette
+  `testclient.py:37` 的 anyio DeprecationWarning（第三方框架，与业务无关）。
+- 2 项 skip 与前五轮完全相同（`-rs` 原文）：
+  `test_calibration.py:226`「pdf_render 已就绪，缺失分支不再适用」（按设计
+  skip）；`test_encoder.py:65`「python-barcode 未安装，跳过第三方交叉验证」
+  （可选库缺失，非缺陷）。
+- P1 策略文件回归：`tests/test_authenticode_policy.py`（60 项）随全量套件
+  一并通过；本组历史守卫 `tests/test_print_chain_audit.py`（19 项）通过。
+
+### 2E.2 P1 指纹绑定 / 竞态（TOCTOU）收窄（引用 P1 测试输出）
+
+**落地事实（P1 文件，本组只读引用）**：第五轮的失配重验只绑定
+`file_size` / `file_mtime_ns`——二者只是常见变化检测线索，**不是内容身份的
+密码学证明**（可被伪造为同大小、同时间戳替换）。第六轮 P1 在签名结论上
+追加 **SHA-256 内容指纹**，并在提权启动前新增独立 `preflight_launch`
+一致性确认，收窄校验→启动之间的竞态窗口。
+
+| 维度 | P1 实现（源码依据） | P1 测试覆盖（`test_file_binding.py` 24 项代表用例） |
+|---|---|---|
+| SHA-256 内容指纹 | `compute_file_sha256(path)`：64KB 分块流式读取，hex 摘要；相同内容必然同指纹，不同内容（即使大小/mtime 伪造一致）必然不同；不可读 → None（fail-closed，绝不把 None 当匹配） | `test_fingerprint_idempotent_same_content`、`test_fingerprint_different_content_different`、`test_chunked_hash_matches_single_read`、`test_large_file_over_64kb_stable`、`test_fingerprint_missing_file_returns_none` |
+| 指纹随签名结论绑定 | `SignatureStatus.sha256` 字段；Windows 路径在调用 `WinVerifyTrust` **之前**先算指纹（`_verify_with_winverifytrust` 内 `pre_verify_digest`），非 ok 状态也尽量携带；`_build_status` 缺省现场读 `file_identity_snapshot` | `test_stale_false_when_fingerprint_matches`、`test_describe_shows_bound_fingerprint_prefix`（UI 仅展示短前缀供人工比对） |
+| 失配重验捕获同大小同 mtime 替换 | `signature_stale` 在携带指纹时强校验 SHA-256；未携带（旧结果）回退 size/mtime，保持向后兼容 | `test_stale_true_on_same_size_mtime_replacement_with_fingerprint` |
+| 提权前 `preflight_launch` 逐项比对 | realpath 消解符号链接后的路径 + 大小 + mtime_ns + SHA-256 全部一致才 `(True, None)`；任一不一致/缺失/不可读/`status=None` → `(False, reason)` 阻止并要求重新验证，**无"继续冒险启动"旁路** | `test_preflight_ok_when_everything_matches`、`test_preflight_ok_through_symlink_to_same_real_file`、`test_preflight_block_same_size_same_mtime_replaced`、`test_preflight_block_mtime_changed`、`test_preflight_block_size_changed`、`test_preflight_block_deleted_file`、`test_preflight_block_status_none`、`test_preflight_block_empty_path`、`test_preflight_block_missing_fingerprint`、`test_preflight_block_incomplete_snapshot`、`test_preflight_block_path_replaced_by_other_file`、`test_preflight_block_symlink_to_replaced_target`、`test_preflight_block_symlink_repointed_to_other_file` |
+| 调用顺序固化（verify→preflight→realpath→launch） | `driver_installer.elevate_process`：`verify_authenticode(target)` → `preflight_launch(target, status)` → `os.path.realpath(target)` 规范化 → `ShellExecuteW`；preflight 失败即 BLOCKED | `test_windows_branch_order_verify_preflight_realpath_launch`（源码顺序断言 + "继续冒险启动"文案缺失即失败） |
+| Linux 平台守卫不触碰文件 | `elevate_process` 在 Linux 由最前平台守卫抛 `UNSUPPORTED_PLATFORM`，守卫前不产生文件副作用；skip 标志仍被守卫隔离 | `test_elevate_process_linux_guard_raises_before_touching_file`、`test_elevate_process_linux_guard_ignores_skip_flag` |
+
+> **竞态如实声明**：verify → preflight → ShellExecuteW 在函数内顺序执行，
+> TOCTOU 窗口已收窄到两次读之间；preflight 与最终 `ShellExecuteW` 之间仍存在
+> **OS 级残余窗口**，本实现不引入跨进程锁（超出范围）；启动改用
+> `os.path.realpath` 规范化绝对路径，收窄符号链接/相对路径/临时目录替换面。
+> Windows 真机符号链接/交接点（junction）行为与 ShellExecuteW 全过程**本轮未
+> 执行（待 Windows）**，Linux 纯逻辑测试不伪造系统调用结果。
+
+### 2E.3 凭据专项扫描结论（详见 `docs/SECURITY_AUDIT.md` 第六节）
+
+- **扫描范围**：工作树（admin/client/server/scripts/tests/tests_server/docs/
+  deploy/installer/data/根目录）+ `git rev-list --all` 全历史；10 个 CRLF
+  噪音文件逐文件复查（不改、不提交）。
+- **结论**：仓库内（含历史）**未发现真实 GitHub PAT / 平台令牌 / 明文口令 /
+  私钥 / 带口令连接串**；历史 0 命中，无需 `git filter-repo` 重写。
+- 唯一私钥 `data/license_private.pem`（Ed25519 开发签名私钥）**未入库**
+  （`data/` 被 gitignore 排除，历史从未提交，spec/安装器不打包）；
+  `.env.example` / `docker-compose.yml` / `scripts/push_via_api.py` /
+  `server/seed.py` / `tests_server/base.py` 均为占位符、env 读取或开发/测试
+  假值，逐项状态与处置建议见 SECURITY_AUDIT 6.3 结果表。
+- 本组**未做任何 git 写操作**（无 `git rm --cached`、无提交）；需集成阶段
+  统一执行的清理项为零（无已提交泄露文件）。
+
+### 2E.4 CodeLabelStudio.spec 依赖核验结论（只加不删，本轮未改 spec）
+
+| 核验点 | 结论 | 依据 |
+|---|---|---|
+| `hashlib` / `os` / `sys` / `dataclasses` / `datetime` / `enum` | **Python 标准库，PyInstaller 自动打包，无需 hiddenimports** | `authenticode.py` 顶部导入；stdlib 由引导器自动收集 |
+| `ctypes`（含 `wintypes`） | **Python 标准库，且为 Windows 分支内惰性导入，自动可用，无需 hiddenimports** | `_verify_with_winverifytrust` 函数内 `import ctypes`；非 Windows 不触发 |
+| `wintrust.dll` | **Windows 运行时系统 DLL，经 `ctypes.windll.wintrust` 按需加载，不需打包、也不应打包** | `authenticode.py` `_verify_with_winverifytrust` 内 `wintrust = ctypes.windll.wintrust`；spec `binaries=[]` 正确，不携带系统 DLL |
+| `client.printing.authenticode` | **已在 hiddenimports（第四轮新增，本轮复核在位）** | spec 第 17 行显式声明，无需补充 |
+
+结论：spec 无缺项，本轮**未修改 spec 任何一行**（只加不删原则下无需加）。
+
+### 2E.5 第六轮五级状态区分表
+
+> 级别定义同前：① 自动化通过；② Windows 构建通过；③ 真实设备实测；
+> ④ 尚未实测；⑤ 尚未实现。
+
+| 事项 | 本轮实际级别 | 依据 / 待办 |
+|---|---|---|
+| P1 SHA-256 指纹绑定 + preflight 一致性 + 调用顺序固化 | **① 自动化通过（纯逻辑/源码层）**；真机 ④ | `test_file_binding.py` 24 项全过；`WinVerifyTrust` 真机未执行 |
+| 凭据专项扫描（工作树 + 全历史） | **① 自动化通过（grep/源码核对）** | 0 真实泄露；报告见 SECURITY_AUDIT 第六节 |
+| spec 依赖核验（stdlib / wintrust / authenticode hiddenimport） | **① 自动化通过（文本核验）** | 2E.4 表；spec 未改 |
+| 客户端全量回归 | **① 自动化通过** | 856 passed / 2 skipped，收集 858，EXIT=0 |
+| 服务端全量回归 | **① 自动化通过** | 167 passed / 0 skipped，1 warning，EXIT=0 |
+| **Windows 真机 `WinVerifyTrust` + preflight 闭环** | **④ 未执行（待 Windows）** | 在线链校验/吊销可达/符号链接·交接点替换/UAC 待真机 |
+| **1.1.0 Windows 构建（exe/便携包/安装包）** | **⑤ 尚未实现（未构建）+ ④ 尚未实测** | Linux 无 PyInstaller win 产物/ISCC；SHA-256 不存在，禁止编造 |
+| **真机打印（队列提交/1:1 卡尺/协议出纸/TCP 连通）** | **④ 尚未实测** | 无 Windows 队列、无设备；PDF 正确 ≠ 物理正确 |
+| USB 私有直连 / 蓝牙 SPP·BLE / LPR | **⑤ 尚未实现（按设计未做）** | 一律 `TRANSPORT_NOT_IMPLEMENTED`，不伪装可用 |
+| ③ 真实设备实测 | **本轮 0 项达到** | 无任何型号经真实设备测试 |
+| ② Windows 构建通过 | **本轮 0 项达到** | 1.1.0 未构建 |
+
+### 2E.6 本轮"未执行项"清单（禁止写成已验证）
+
+**④ 尚未实测（代码/纯逻辑就绪，目标环境未验证）**：
+
+1. **Windows 真机签名 + preflight 闭环**：`WinVerifyTrust` 在线链校验、
+   吊销服务器可达、明确吊销/链错误/过期/篡改拦截、官方签名包放行、UAC
+   提权；**新增**：验证后→启动前替换文件（含同大小同 mtime 替换、符号链接
+   改指/交接点）的 preflight 真机拦截、`realpath` 对 junction 的行为；
+2. **1.1.0 Windows 构建**：PyInstaller onefile + 便携 zip + ISCC 安装包，
+   PYZ 模块核对、EXE 启动冒烟、三件 SHA-256 回填；
+3. **真机打印**：真实队列枚举/提交/取消/查询、1:1 物理尺寸卡尺复核、
+   ZPL/TSPL/CPCL 真实出纸、TCP 9100 真实连通、warn 缩放对话框真机点击；
+4. 安装向导三页交互、覆盖升级 1.0.0→1.1.0 数据保留、卸载询问两分支。
+
+**⑤ 尚未实现（按设计未做）**：USB 私有裸协议直连、蓝牙 SPP/BLE 裸直连、
+LPR（RFC 1179）；代码自身数字签名证书/自动更新；跨进程锁（TOCTOU OS 级
+残余风险，有意不引入）。
+
+---
+
 ## 3. 十类要求覆盖点逐一说明
 
 > 每一项均注明：在哪里被覆盖、以什么形式、自动化覆盖到哪一层、
@@ -1150,7 +1268,7 @@ block/warn 分级与取消选项、P3a 四态与 verified 守卫均有自动化�
 ③真实设备实测本轮均为 0 项；硬件验收以第 4 节清单在 Windows 人工执行为准。
 第一轮 456/167 历史记录见 2.1/2.2。**
 
-**结论（第五轮 2026-10-22，最新以此为准）：自动化 832 passed / 2 skipped
+**结论（第五轮 2026-10-22，历史保留）：自动化 832 passed / 2 skipped
 （客户端，收集 834，EXIT=0，连跑稳定，无 QThread Destroyed/abort）+
 167 passed（服务端，EXIT=0，1 条第三方 anyio 告警）全部通过，0 failed
 0 error；2 项跳过为已说明的环境/设计原因。本轮 P1 Authenticode 完整性
@@ -1162,3 +1280,17 @@ block/warn 分级与取消选项、P3a 四态与 verified 守卫均有自动化�
 Windows 构建/自检按 2C.4-D 与 PRINTER_INSTALLATION 第 10 节执行，真机签名与
 逐型号打印登记 PRINTER_COMPATIBILITY 7.1 空表。第四轮 753/167、第三轮
 711/167、第二轮 597/167、第一轮 456/167 历史记录见 2C / 2B / 2A / 2.1-2.4。**
+
+**结论（第六轮 2026-10-22，最新以此为准）：自动化 856 passed / 2 skipped
+（客户端，收集 858，EXIT=0，连跑稳定，无 QThread Destroyed/abort）+
+167 passed（服务端，EXIT=0，1 条第三方 anyio 告警）全部通过，0 failed
+0 error；2 项跳过为已说明的环境/设计原因（`test_calibration.py:226` 缺失
+分支已不再适用；`test_encoder.py:65` python-barcode 可选库未装）。本轮 P1
+SHA-256 内容指纹绑定 / preflight 提权前一致性 / TOCTOU 收窄由
+`test_file_binding.py` 24 项纯逻辑覆盖；凭据专项扫描（工作树 + 全历史）无
+真实泄露、历史无需重写（见 SECURITY_AUDIT 第六节）；spec stdlib/wintrust/
+authenticode 复核无缺项（见 2E.4）。②Windows 构建通过与 ③真实设备实测本轮
+均为 0 项：1.1.0 未构建、`WinVerifyTrust` + preflight 未在真机执行、无任何
+型号经真机打印测试；USB/蓝牙裸直连、LPR 为 ⑤尚未实现。第五轮 832/167、
+第四轮 753/167、第三轮 711/167、第二轮 597/167、第一轮 456/167 历史记录见
+2D / 2C / 2B / 2A / 2.1-2.4。**

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -33,6 +34,7 @@ from .authenticode import (  # noqa: F401  (纯逻辑再导出，供调用方/�
     elevation_blocked_message,
     map_elevation_outcome,
     parse_elevate_request,
+    preflight_launch,
     should_block_elevation,
     verify_authenticode,
 )
@@ -388,9 +390,10 @@ _KIND_TO_RESULT = {
 class ElevationOutcome:
     """提权结果 + 附加系统错误码（ShellExecuteW 返回值，<=32 为错误）。
 
-    ``blocked_reason`` 仅在 ``status == BLOCKED`` 时非空，记录签名闸门拦截原因。
-    ``signature`` 携带本次绑定到具体文件路径的签名验证结论（含大小/mtime
-    快照，供失配重验）；跳过签名检查或未执行时为 None。
+    ``blocked_reason`` 仅在 ``status == BLOCKED`` 时非空，记录签名闸门/
+    启动前一致性拦截原因。``signature`` 携带本次绑定到具体文件路径与内容
+    （大小/mtime 快照 + SHA-256 指纹）的签名验证结论；跳过签名检查或未执行
+    时为 None。
     """
 
     status: ElevationResult
@@ -410,11 +413,22 @@ def elevate_process(
 
     提权前闸门（默认流程，不可被普通参数关闭）：
 
-    1. ``verify_authenticode(path)`` 检查 Authenticode 签名；
+    1. ``verify_authenticode(path)`` 检查 Authenticode 签名（同时计算并绑定
+       SHA-256 内容指纹）；
     2. ``should_block_elevation`` 决策：未签名 / 签名无效 / 无法验证 /
        类型不支持 → 返回 ``BLOCKED``，**不发起任何提权**；
-    3. 签名 ``ok`` 才进入 UAC 提权；放行时仍携带
+    3. ``preflight_launch(path, status)`` 在发起 ``ShellExecuteW`` **之前**
+       复核 realpath 路径 / 大小 / mtime / SHA-256 与验证快照逐项一致；任一
+       不一致（含同大小同时间戳的内容替换、符号链接改指、文件删除）→
+       ``BLOCKED`` 要求重新验证，**不提供继续冒险启动的旁路**；
+    4. 签名 ``ok`` 且 preflight 通过才进入 UAC 提权；放行时仍携带
        “签名有效≠文件绝对安全，请核对官方来源”的提示（由 UI 展示）。
+
+    竞态说明（如实声明）：verify → preflight → ShellExecuteW 在本函数内顺序
+    执行，TOCTOU 窗口已收窄到两次读之间；窗口仍属 OS 级残余风险，本实现不
+    引入跨进程锁（超出范围）。启动改用 ``os.path.realpath`` 规范化绝对路径，
+    避免用户原始路径经符号链接/相对路径/临时目录被替换；用户目录可写路径
+    需谨慎，Windows 下建议从官方解压目录启动。
 
     安全约束（硬编码，不可被参数关闭）：
 
@@ -480,15 +494,34 @@ def elevate_process(
                 signature=status,
             )
 
+        # 提权前一致性确认（verify → preflight → 启动，顺序在同一函数内）：
+        # realpath 路径 / 大小 / mtime / SHA-256 全部与验证快照一致才放行；
+        # 任一不一致（含同大小同时间戳的内容替换、符号链接改指、文件删除）
+        # 即 BLOCKED 要求重新验证，不提供“继续冒险启动”旁路。
+        pre_ok, pre_reason = preflight_launch(target, status)
+        if not pre_ok:
+            return ElevationOutcome(
+                ElevationResult.BLOCKED, blocked_reason=pre_reason,
+                signature=status,
+            )
+
     # Windows 真实提权（ShellExecuteW runas；EXE/MSI 分路径，列表参数）。
     # pragma: no cover - 仅 Windows 真机执行，Linux 测试不可达
     import ctypes  # 惰性导入，Linux 不触发
 
+    # 启动使用 realpath 规范化后的绝对路径，而不是用户原始路径：消解符号
+    # 链接/相对路径/冗余分隔符，收窄临时目录、共享目录、路径替换面。残余
+    # TOCTOU（preflight 与 ShellExecuteW 之间）为 OS 级风险，本实现不另加
+    # 跨进程锁（超出范围）；用户可写目录下的安装包需谨慎，建议从官方解压
+    # 目录启动。
+    normalized = os.path.realpath(target)
     if plan.is_msi:
         lp_file = "msiexec.exe"
-        lp_parameters = build_shellexec_parameters(plan)
+        # MSI 经 msiexec /i 启动：参数串里的安装包路径改用规范化绝对路径。
+        normalized_plan = parse_elevate_request(normalized, plan.args)
+        lp_parameters = build_shellexec_parameters(normalized_plan)
     else:
-        lp_file = plan.path
+        lp_file = normalized
         lp_parameters = build_shellexec_parameters(plan)
 
     ret = ctypes.windll.shell32.ShellExecuteW(

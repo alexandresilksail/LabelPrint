@@ -124,3 +124,75 @@ HIGH: 0 | MEDIUM: 0 | LOW: 0
 
 静态扫描 0 问题；人工清单全部通过；第二轮四项审计问题已修复并有对应测试
 （新增 73 项服务端测试）。剩余为部署环境相关加固与未接入的外部服务。
+
+---
+
+## 六、凭据（Secret）专项扫描与处置（2026-10-22 第六轮）
+
+> 本节为**凭据/令牌/私钥专项**，与前五节 bandit 通用静态扫描互补。
+> 诚信红线：本报告只记录**文件路径 + 类型 + 状态 + 处置建议**，
+> 不复制、不转写任何疑似凭据的字面值；仓库内未发现需要吊销的真实令牌。
+
+### 6.1 扫描范围
+
+- **工作树**：`admin/`、`client/`、`server/`、`scripts/`、`tests/`、
+  `tests_server/`、`docs/`、`deploy/`、`installer/`、`data/`、根目录
+  （`docker-compose.yml`、`.env.example`、`README.md`、`requirements.txt`）；
+  二进制构建产物（`build/`、`dist/`）不做文本扫描。
+- **git 历史**：`git rev-list --all` 全量提交逐一匹配（含 HEAD 之前的全部历史），
+  不只扫工作树。
+- **CRLF 噪音文件**（本轮不在清理/提交范围）仍逐个人工检查：
+  `client/ui/pages/account.py`、`generate.py`、`records.py`、`settings.py`、
+  `templates.py`，`docs/test_results_phase1/3/4/14.txt`，`server/app/licensing.py`。
+
+### 6.2 扫描方法（grep / 模式清单）
+
+| 类别 | 匹配模式（掩码后仅用于分类，不输出值） |
+|---|---|
+| GitHub PAT / 平台令牌 | `ghp_`、`gho_`、`github_pat_`、`glpat-`、`ya29.`、`sk-` 前缀；`Authorization: Bearer`、`token ` 赋值模式；AWS `AKIA[0-9A-Z]{16}` |
+| 口令/密码明文 | `password=`、`passwd`、`pwd=`、`PASS*=`、`secret=`、`api_key/apikey=`、`access_key=` 的字面量赋值（排除 `os.environ.get` / `getenv` 运行时读取与占位符） |
+| 私钥 | `BEGIN ... PRIVATE KEY` 块；`.pem` / `.key` / `.p12` / `.pfx` 文件 |
+| 环境/配置与连接串 | `.env` / `.env.example`；`postgres(ql)://user:pass@`、`mysql://`、`redis://` 带口令 URI；JWT/SMTP/Webhook/DB 连接串 |
+| 测试夹具/脚本/文档硬编码令牌 | `tests/`、`tests_server/`、`scripts/`、`docs/` 中长 hex/base64 常量与字面量令牌 |
+
+判定口径：`CHANGE_ME`、`change_me`、`<your-token>`、`xxx`、`example.com`、
+测试用假口令、运行时从环境/表单/sessionStorage 读取的值**不算泄露**；
+开发兜底默认值单独标注且确认生产路径被阻断。
+
+### 6.3 结果表（仅路径 + 类型 + 状态，无值）
+
+| # | 路径 | 类型 | 状态 | 处置建议（本组未做 git 写操作，由集成阶段统一执行） |
+|---|---|---|---|---|
+| 1 | `data/license_private.pem` | Ed25519 授权签名私钥（PEM，本地开发用） | **安全：未入库**（`data/` 被 `.gitignore` 排除，`git ls-files data/` 为空；全部历史从未提交；spec/安装器不打包） | 保持本地 `600` 权限；生产改用 `CLS_LICENSE_PRIVATE_KEY`（env hex）；确认不随客户端分发；若该私钥曾外发/进聊天记录需**轮换**（新密钥对 + 重新签发授权） |
+| 2 | `.env.example` | 环境变量样例（DB/JWT/SMTP/Webhook/管理员） | **安全占位符**（全部 `CHANGE_ME`） | 保持；真实 `.env` 已被 gitignore 排除，工作树内不存在 `.env` |
+| 3 | `docker-compose.yml` | 数据库口令 `${DB_PASSWORD:-change_me}` | **安全占位符**（环境插值默认值，非硬编码） | 生产由 `.env`/secret 注入，禁止沿用 `change_me` |
+| 4 | `scripts/push_via_api.py` | GitHub API 推送令牌 | **安全：无硬编码**（`GITHUB_TOKEN` 仅从环境变量读取；docstring 示例为 `ghp_xxx` 占位） | 保持 env 读取；禁止把真实 PAT 写进脚本/提交；历史 PAT 若曾明文出现需到 GitHub 撤销重建 |
+| 5 | `server/seed.py` | 开发兜底管理员账号/口令 | **开发默认值（非泄露）**：缺 env 时仅开发使用，生产路径 `SystemExit` 阻断 | 部署文档强调生产必须显式设置 `CLS_ADMIN_USERNAME/EMAIL/PASSWORD`；开发账号不对外 |
+| 6 | `tests_server/base.py` | 测试夹具注册/登录/管理员口令 | **安全假值**：仅作用于每个用例全新建的临时 SQLite 库，不入库、不对外 | 无需处置 |
+| 7 | `server/app/config.py` | 会话密钥/SMTP/DB/CORS | **安全**：全部 env 注入；`test-secret-key-not-for-production` 仅为生产拒绝检查的**标记值**，不是密钥 | 保持生产 `production_errors()` 缺失即拒绝启动 |
+| 8 | `admin/app.js`、`client/auth/api_client.py`、`client/licensing/client_license.py`、`server/api/deps.py` | Bearer 令牌 | **安全：运行时提取**（sessionStorage / 响应体 / 请求头解析），无字面量令牌 | 保持 |
+| 9 | `server/app/licensing.py` | 授权私钥加载 | **安全**：env hex 优先，其次 PEM 文件；生产缺失即拒绝生成，开发才自动落盘 | 保持；PEM 权限 `600` |
+| 10 | 10 个 CRLF 噪音文件（见 6.1） | 逐文件复查 | **安全：无泄露模式命中** | 本轮不改、不提交 |
+
+### 6.4 git 历史处理说明
+
+- `git rev-list --all` 全历史扫描：`ghp_/gho_/github_pat_/glpat-` 前缀、
+  `BEGIN ... PRIVATE KEY` 块、带口令数据库/缓存连接串、字面量密码赋值
+  **均 0 命中**；历史中从未出现 `.pem` / `.key` / `.p12` / `.pfx` / 真实 `.env`。
+- 结论：**历史中无可提取的真实凭据，无需 `git filter-repo` 重写历史**；
+  工作树也没有已提交的泄露文件需要 `git rm --cached`。
+- `server/seed.py` 的开发兜底口令在历史中存在，但属生产阻断的开发默认值，
+  不构成泄露，无需重写历史。
+
+### 6.5 用户侧处置建议（部署前）
+
+1. **令牌**：仓库内无真实 PAT/平台令牌，无需因本仓库吊销；推送令牌仅经
+   `GITHUB_TOKEN` 环境变量注入，不落盘、不入提交。
+2. **授权私钥轮换（条件触发）**：若 `data/license_private.pem` 曾被外发、
+   截图或进入聊天记录，生成新 Ed25519 密钥对并重新签发全部已发授权
+   （旧私钥签发的授权将验签失败）。
+3. **生产密钥全部外置**：`CLS_SECRET_KEY`、`CLS_LICENSE_PRIVATE_KEY`、
+   `CLS_SMTP_PASSWORD`、`DB_PASSWORD`、管理员初始口令走环境变量或 secret
+   manager，禁止写入仓库/镜像层。
+4. **开发默认值**：`server/seed.py` 兜底账号仅本地开发；生产启动缺
+   `CLS_ADMIN_*` 直接退出。

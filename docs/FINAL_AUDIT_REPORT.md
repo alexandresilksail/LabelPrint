@@ -374,6 +374,9 @@ $ QT_QPA_PLATFORM=offscreen timeout 25 ./dist/CodeLabelStudio.exe
 Windows/无设备），清单见 `docs/PRINTER_TEST_REPORT.md` 第 4 节；自动化只
 覆盖计算/逻辑/异常分支与平台守卫。
 
+> **当前自动化数字以第六轮 8D.1 为准**：客户端 856 passed/2 skipped
+> （EXIT=0）、服务端 167 passed（EXIT=0）；本节 711/167 为第三轮历史记录。
+
 ### 8.6 Windows 安装包（本环境无法构建，如实说明）
 
 - **限制**：本 Linux 沙箱**无 Inno Setup 编译器（ISCC.exe）**，无法编译安装包；
@@ -562,6 +565,61 @@ USB/蓝牙/LPR 明确 `TRANSPORT_NOT_IMPLEMENTED`、SENT/QUEUED 不宣称物理�
 | W4 | 1.0.0→1.1.0 覆盖升级 / 卸载询问真机行为（承 U5/U6） | ④ 待 Windows 实测 | 升级验收时核对，必要时改安装器回填注册表 |
 | W5 | `v1.1.0` git 标签未创建、`RELEASE_CHECKLIST.md` 仍为 1.0.0 历史清单（承 U2/U4） | 待维护者 | Windows 构建与真机验收通过后由维护者处理；本轮禁止 git 写操作 |
 
+## 8D. 第六轮：P1 指纹绑定 / 竞态收窄 + 凭据专项扫描 + spec 依赖复核（2026-10-22）
+
+> 本轮定位：**回归 + 凭据审计 + spec 文本核验 + 文档同步**，不改 P1 文件、
+> 不改既有测试断言、不做 git 写操作。未执行 Windows 构建、未执行
+> `WinVerifyTrust` 真机验证、未执行真机打印，不伪造任何结果。
+
+### 8D.1 修复记录
+
+| 位置 | 改动 | 归属 / 说明 |
+|---|---|---|
+| `client/printing/authenticode.py` | 签名结论追加 SHA-256 内容指纹绑定（`compute_file_sha256` 64KB 分块、`SignatureStatus.sha256`、验证前先算指纹）；新增独立 `preflight_launch`（realpath 路径/大小/mtime/SHA-256 逐项一致才放行，缺指纹/不一致即 BLOCKED，无旁路）；`signature_stale` 携带指纹时强校验捕获同大小同 mtime 替换 | **P1 落地（本组未改）**；`tests/test_file_binding.py` 24 项纯逻辑覆盖 |
+| `client/printing/driver_installer.py` | 提权顺序固化为 `verify_authenticode → preflight_launch → realpath 规范化 → ShellExecuteW`；preflight 失败即 BLOCKED；补 TOCTOU OS 级残余风险说明（不引入跨进程锁） | **P1 落地（本组未改）** |
+| `client/ui/pages/print_export.py` | 构造签名结论时绑定 `compute_file_sha256(path)`，供失配重验与启动前复核 | **P1 落地（本组未改）** |
+| `tests/test_file_binding.py`（新建） | 指纹幂等/差异/分块一致/大文件/缺失、preflight 全分支阻止（同大小同 mtime 替换、改 mtime、改大小、删除、status=None、空路径、缺指纹、快照不全、路径替换、符号链接改指/换指）、stale 指纹强校验、UI 短前缀展示、Linux 守卫不触文件、源码调用顺序断言，24 项全 passed | **P1 落地** |
+| `docs/SECURITY_AUDIT.md`（新增第六节） | 凭据专项扫描：范围/方法/结果表/历史说明/用户侧处置；工作树 + `git rev-list --all` 全历史 | **本组** |
+| 6 份文档同步 | 自动化数字更新为终测实测；补指纹绑定口径、凭据结论、spec 依赖结论 | **本组**；1.1.0 未构建、SHA-256 待回填保持不变 |
+
+终测真实输出：`QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q` →
+**856 passed, 2 skipped（EXIT=0）**（较第五轮 832 净增 24，全部来自
+`test_file_binding.py`）；`python3 -m pytest tests_server/ -q` →
+**167 passed, 1 warning（EXIT=0）**。2 项 skip 与前五轮相同
+（`test_calibration.py:226` 缺失分支已不再适用；`test_encoder.py:65`
+python-barcode 可选库未装）。
+
+### 8D.2 凭据处置（详见 `docs/SECURITY_AUDIT.md` 第六节）
+
+- **工作树 + 全历史扫描结论**：无真实 GitHub PAT / 平台令牌 / 明文口令 /
+  私钥 / 带口令连接串；历史 0 命中，**无需 `git filter-repo` 重写历史**，
+  也无已提交泄露文件需要 `git rm --cached`（本轮未做任何 git 写操作）。
+- `data/license_private.pem`（Ed25519 开发私钥）未入库（gitignore 排除、
+  历史从未提交、不进分发物）；`.env.example`/`docker-compose.yml`/
+  `scripts/push_via_api.py`/`server/seed.py`/`tests_server/base.py` 为
+  占位符、env 读取或开发/测试假值，逐项状态见结果表。
+- 用户侧：仓库内无令牌需吊销；私钥仅在"曾外发"条件触发轮换；生产密钥全部
+  走环境变量/secret manager。
+
+### 8D.3 spec 依赖复核（本轮未改 spec，只加不删原则下无缺项）
+
+- `hashlib`/`os`/`sys`/`dataclasses`/`datetime`/`enum`/`ctypes` 均为
+  Python 标准库，PyInstaller 自动打包，**无需 hiddenimports**；
+- `wintrust.dll` 为 Windows 运行时系统 DLL（`ctypes.windll.wintrust`
+  按需加载），**不打包、不应打包**，spec `binaries=[]` 正确；
+- `client.printing.authenticode` 已在 hiddenimports（第四轮声明，本轮复核在位）。
+
+### 8D.4 第六轮未解决项（接续 8C.3，不重复列已闭环项）
+
+| # | 未解决项 | 级别 | 后续动作 |
+|---|---|---|---|
+| W1' | **Windows 真机签名 + preflight 闭环未执行**：在 W1 基础上新增——验证后/启动前替换文件（含同大小同 mtime 替换、符号链接改指、junction 交接点）的 preflight 真机拦截、realpath 对链接/junction 行为、UAC 全过程 | ④ 待 Windows 真机 | 纯逻辑 23 + 60 项已过；真机按 11.3 与 PRINTER_TEST_REPORT 2E.6 留档，禁止以纯逻辑通过替代 |
+| W2 | **1.1.0 Windows 构建未执行**：exe/便携包/安装包未产出，三件 SHA-256 不存在（承 8C.3） | ⑤ 未构建 + ④ 未实测 | 按 BUILD_REPORT 7.2 构建后回填哈希，禁止编造 |
+| W3 | **真机打印未执行**：真实队列提交/取消/查询、1:1 卡尺复核、ZPL/TSPL/CPCL 出纸、TCP 9100 连通（承 8C.3） | ④ 待 Windows 真机 + 设备 | 无队列/无设备；PDF 页面正确 ≠ 物理输出正确 |
+| W4 | 1.0.0→1.1.0 覆盖升级 / 卸载询问真机行为（承 8C.3） | ④ 待 Windows 实测 | 升级验收时核对，必要时改安装器回填注册表 |
+| W5 | `v1.1.0` git 标签未创建、`RELEASE_CHECKLIST.md` 仍为 1.0.0 历史清单（承 8C.3） | 待维护者 | Windows 构建与真机验收通过后由维护者处理；本轮禁止 git 写操作 |
+| W6 | TOCTOU OS 级残余窗口（preflight 与 ShellExecuteW 之间）有意不引入跨进程锁 | ⑤ 设计内残余风险 | 文档如实声明；如威胁模型要求需另案评估跨进程锁/文件锁定 |
+
 ## 9. GitHub 推送状态
 
 - 远端仓库：`github.com/alexandresilksail/LabelPrint`（分支 main）
@@ -590,7 +648,8 @@ USB/蓝牙/LPR 明确 `TRANSPORT_NOT_IMPLEMENTED`、SENT/QUEUED 不宣称物理�
 | 自动化测试（**2026-10-22 第三轮，以此为准**） | ✅ 客户端 **711 passed/2 skipped**（收集 713，**EXIT=0，连跑稳定无 Destroyed**）；服务端 **167 passed/0 skipped（EXIT=0）**；0 failed 0 error（第二轮 597/167、第一轮 456/167 历史保留于第 3 节） |
 | 第二轮打印审计修复（P0/P1a/P1b/P3a，2026-10-22） | ✅ **全部落地，可自动化部分通过**（新增 4 文件 114 项：RunLater 生命周期、静区配置传递/unapplied、缩放 block/warn 分级与取消选项、四态与 verified 守卫）；对话框真机交互/硬件/构建未实测，五级见 8A.3 |
 | 第四轮版本统一（2026-10-22） | ✅ 桌面版本口径统一为 1.1.0（`__version__`/安装器/显示/安装包文件名四者一致，见 8B.2、BUILD_REPORT 7.4）；AppId 升级路径为**只读代码审查**，升级/卸载真机行为待 Windows（8B.3/8B.4），未伪造实测 |
-| 第五轮 Authenticode 完整性 + 打印链路审计（2026-10-22，**自动化以此为准**） | ✅ 客户端 **832 passed/2 skipped（EXIT=0）**、服务端 **167 passed（EXIT=0）**；P1 吊销整条链/链错误/HRESULT 归一化/签名者提取/失配重验/skip 隔离 60 项纯逻辑通过，打印链路六项审计通过无违规（守卫 19 项）；`WinVerifyTrust` 真机、1.1.0 构建、真机打印均待 Windows（8C） |
+| 第五轮 Authenticode 完整性 + 打印链路审计（2026-10-22） | ✅ 客户端 **832 passed/2 skipped（EXIT=0）**、服务端 **167 passed（EXIT=0）**；P1 吊销整条链/链错误/HRESULT 归一化/签名者提取/失配重验/skip 隔离 60 项纯逻辑通过，打印链路六项审计通过无违规（守卫 19 项）；`WinVerifyTrust` 真机、1.1.0 构建、真机打印均待 Windows（8C） |
+| 第六轮指纹绑定 + 凭据扫描 + spec 复核（2026-10-22，**自动化以此为准**） | ✅ 客户端 **856 passed/2 skipped（EXIT=0）**、服务端 **167 passed（EXIT=0）**；P1 SHA-256 内容指纹绑定/preflight 提权前一致性/TOCTOU 收窄 24 项纯逻辑通过；工作树+全历史凭据扫描无真实泄露、历史无需重写（SECURITY_AUDIT 第六节）；spec stdlib/wintrust/authenticode 复核无缺项；真机签名+preflight、1.1.0 构建、真机打印均待 Windows（8D） |
 | 自动化测试（2026-10-20 第二轮，历史） | ✅ 客户端 597 passed/2 skipped（收集 599）；服务端 167 passed/0 skipped；0 failed 0 error |
 | 缺陷修复轮（八类，2026-10-20） | ✅ **修复全部落地；可自动化部分通过**（份数唯一展开/纸张一致性/校准参数贯通/LabelContent 协议链路/传输诚实性 SENT 语义/PrintJobSession 均有单测；驱动启动≠成功仅非 Windows 守卫有单测，四态/UAC/刷新闭环 ④未实测；安装器 1.1.0 仅脚本文本级核对）；**硬件相关未实测**，逐项五级标注见 PRINTER_TEST_REPORT.md 第 2A.2 节 |
 | 静态扫描 8111 行 | ✅ 0 问题（2026-10-18 轮记录，第二轮未重扫） |

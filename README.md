@@ -30,7 +30,7 @@
 
 git 当前无任何 tag；`v1.1.0` 标签应在 Windows 构建与真机验收通过后由维护者创建并推送。
 
-### 签名完整性状态（Authenticode，2026-10-22 第五轮）
+### 签名完整性状态（Authenticode，2026-10-22 第六轮）
 
 - **已实现（纯逻辑/源码层，① 自动化通过）**：提权前 Authenticode 闸门；
   `WinVerifyTrust` 通用验证动作、**整条链吊销检查**（`WTD_REVOKE_WHOLECHAIN`，
@@ -38,9 +38,15 @@ git 当前无任何 tag；`v1.1.0` 标签应在 Windows 构建与真机验收通
   签名者最佳努力提取（取不到留 None 不编造）、路径绑定 + 大小/mtime 失配重验、
   `skip_signature_check` 生产隔离；未签名/无效/无法验证/类型不支持一律阻止提权。
   由 `tests/test_authenticode_policy.py`（60 项）在 Linux 覆盖纯逻辑。
+- **第六轮新增（① 自动化通过）**：签名结论绑定 **SHA-256 内容指纹**（密码学内容
+  身份，捕获同大小同时间戳替换）；提权启动前 `preflight_launch` 复核
+  realpath 路径/大小/mtime/SHA-256 逐项一致，任一不一致即阻止并要求重新验证，
+  无"继续冒险启动"旁路；调用顺序固化为 验证→preflight→realpath→提权。
+  由 `tests/test_file_binding.py`（24 项）在 Linux 覆盖纯逻辑。
 - **待 Windows 真机（④ 未执行）**：真实 `WinVerifyTrust` 在线链校验、吊销可达性、
-  官方签名包放行与 UAC 提权交互均未在本机执行；Linux 不伪造验证结果。
-  应用自身的代码数字签名证书仍为 ⑤ 尚未实现（无证书，SmartScreen 提示"未知发布者"）。
+  官方签名包放行、preflight 替换/符号链接·交接点拦截与 UAC 提权交互均未在本机
+  执行；Linux 不伪造验证结果。应用自身的代码数字签名证书仍为 ⑤ 尚未实现
+  （无证书，SmartScreen 提示"未知发布者"）。
 
 ### 打印能力清单（自动化已通过 ≠ 真机已验证）
 
@@ -59,7 +65,7 @@ git 当前无任何 tag；`v1.1.0` 标签应在 Windows 构建与真机验收通
 - **蓝牙**（SPP / BLE）：未集成。
 - **LPR（RFC 1179，515 端口）**：未实现；网络通道仅支持 9100 TCP raw。
 
-## 当前进度（2026-10-22，截至第五轮打印链路审计与签名完整性）
+## 当前进度（2026-10-22，截至第六轮指纹绑定 / 凭据扫描 / spec 复核）
 
 | 阶段 / 轮次 | 内容 | 状态 |
 | --- | --- | --- |
@@ -71,6 +77,7 @@ git 当前无任何 tag；`v1.1.0` 标签应在 Windows 构建与真机验收通
 | 第二轮打印审计修复（2026-10-22，第三轮） | P0 RunLater 线程生命周期 / P1a 静区配置传递与 unapplied / P1b 缩放 block·warn 分级 / P3a 协议四态与 verified 守卫 | ✅ 自动化闭环（新增 114 项；客户端 711 passed/2 skipped、服务端 167 passed，EXIT=0）；真机交互/硬件未实测 |
 | 版本统一（2026-10-22，第四轮） | 桌面版本口径统一 1.1.0；AppId 升级路径只读审查 | ✅ 代码/文档完成；升级/卸载与 1.1.0 构建待 Windows（`docs/FINAL_AUDIT_REPORT.md` 8B） |
 | 签名完整性 + 打印链路审计（2026-10-22，第五轮） | Authenticode 吊销整条链/链错误/HRESULT 归一化/签名者提取/失配重验/skip 隔离纯逻辑；打印链路六项审计（份数唯一展开/几何贯通/缩放诚信/通道诚实/状态语义/未验证守卫） | ✅ 自动化闭环（客户端 **832 passed / 2 skipped**、服务端 **167 passed**，均 EXIT=0）；`WinVerifyTrust` 真机验证、1.1.0 构建、真机打印均待 Windows（`docs/PRINTER_TEST_REPORT.md` 2D） |
+| 指纹绑定 + 凭据扫描 + spec 复核（2026-10-22，第六轮） | SHA-256 内容指纹绑定 / preflight 提权前一致性 / TOCTOU 窗口收窄；工作树+全历史凭据专项扫描；spec stdlib 与 wintrust 依赖复核 | ✅ 自动化闭环（客户端 **856 passed / 2 skipped**、服务端 **167 passed**，均 EXIT=0）；仓库内无真实凭据/令牌需吊销，历史无需重写（`docs/SECURITY_AUDIT.md` 第六节）；真机签名+preflight、1.1.0 构建、真机打印均待 Windows（`docs/PRINTER_TEST_REPORT.md` 2E） |
 
 ## 快速开始
 
@@ -126,3 +133,4 @@ CodeLabelStudio/
 - 本地数据库去重仅证明"本地未重复"，不等同于全球 GS1 注册状态验证（见 `client/barcode/service.py` 中 `validate_import` 的提示语）。
 - **PDF 页面正确 ≠ 物理输出正确**：第三方驱动是否缩放、设备能否按物理尺寸走纸，软件无法确认；warn 分级与取消选项已就绪，但真机交互与 1:1 物理尺寸须在 Windows 真机用卡尺复核。
 - 1.0.0 历史产物仅供存档，**不反映当前 1.1.0 源码**；1.1.0 构建、SHA-256 回填、升级/卸载与真机验收均待 Windows，详见 `docs/BUILD_REPORT.md` 与 `docs/FINAL_AUDIT_REPORT.md` 8B。
+- **凭据安全（2026-10-22 第六轮扫描）**：仓库工作树与 git 全历史均无真实 PAT/令牌/明文口令/私钥/带口令连接串，无需吊销、无需重写历史；本地开发私钥 `data/license_private.pem` 未入库（gitignore 排除）。生产密钥（会话密钥/授权私钥/SMTP/DB/管理员口令）一律走环境变量或 secret manager，禁止写入仓库；明细见 `docs/SECURITY_AUDIT.md` 第六节。
