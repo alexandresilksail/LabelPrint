@@ -33,6 +33,15 @@ from ...printing.calibration import (
 from ...printing.config_store import (
     PrinterConfigStore, PrinterPrintConfig,
 )
+from ...printing.authenticode import (
+    SIGNED_OK_CAUTION,
+    SignatureStatus,
+    VerificationStatus,
+    describe_signature_status,
+    elevation_blocked_message,
+    should_block_elevation,
+    verify_authenticode,
+)
 from ...printing.driver_installer import (
     ElevationResult, build_driver_guidance, detect_driver_state,
     elevate_process, install_guidance_for_state,
@@ -59,8 +68,9 @@ class DriverGuidanceDialog(QDialog):
     """展示厂商官方驱动来源与兼容性说明，并允许提权运行用户自备安装程序。
 
     红线：本对话框不下载、不释放任何驱动；``elevate_process`` 仅启动用户
-    自己从官方渠道下载好的安装程序，由 Windows UAC 完成授权；不提供
-    “跳过签名校验”的旁路。
+    自己从官方渠道下载好的安装程序，由 Windows UAC 完成授权；提权前先检查
+    Authenticode 签名，未签名/无效/无法验证/类型不支持默认阻止，不提供
+    “跳过签名校验”的旁路；签名有效也不代表绝对安全，始终提示核对官方来源。
     """
 
     def __init__(self, caps, parent=None):
@@ -103,15 +113,24 @@ class DriverGuidanceDialog(QDialog):
 
         layout.addWidget(MutedLabel(
             "安全说明：本程序不会自动下载或安装驱动，不会关闭/绕过驱动签名"
-            "检查，也不修改任何 Windows 安全设置。请自行从厂商官方网站下载"
-            "对应型号的 Windows 驱动安装程序。"))
+            "检查，也不修改任何 Windows 安全设置。选择安装程序后将先检查其"
+            "Authenticode 数字签名：未签名/签名无效/无法验证会被默认阻止提权。"
+            "请自行从厂商官方网站下载对应型号的 Windows 驱动安装程序。"))
 
-        # ---- 选择用户自备的官方安装程序并提权运行 ----
+        # ---- 选择用户自备的官方安装程序；提权前先做 Authenticode 签名检查 ----
         self.path_label = MutedLabel("尚未选择安装程序")
         btn_pick = QPushButton("选择已下载的官方驱动安装程序…")
         btn_pick.clicked.connect(self._pick_installer)
         layout.addWidget(btn_pick)
         layout.addWidget(self.path_label)
+
+        # 提权前的签名状态面板：状态 / 发布者 / 文件路径 / 失败原因
+        self.signature_label = MutedLabel("选择文件后将先检查 Authenticode 数字签名。")
+        self.signature_label.setWordWrap(True)
+        layout.addWidget(self.signature_label)
+        self.guard_label = MutedLabel("")
+        self.guard_label.setWordWrap(True)
+        layout.addWidget(self.guard_label)
 
         self.btn_run = QPushButton("以管理员身份运行所选安装程序（UAC 授权）")
         self.btn_run.setEnabled(False)
@@ -119,6 +138,7 @@ class DriverGuidanceDialog(QDialog):
         layout.addWidget(self.btn_run)
 
         self.result_label = MutedLabel("")
+        self.result_label.setWordWrap(True)
         layout.addWidget(self.result_label)
 
         close = QPushButton("关闭")
@@ -133,25 +153,56 @@ class DriverGuidanceDialog(QDialog):
             return
         self.installer_path = path
         self.path_label.setText(f"已选择：{path}")
-        self.btn_run.setEnabled(True)
+        self._refresh_signature_status(path)
+
+    def _refresh_signature_status(self, path: str):
+        """提权前展示签名状态；未签名/无效/无法验证/类型不支持 → 禁用安装按钮。
+
+        非 Windows（验证能力不可用）时按 not_verifiable 谨慎阻止，绝不伪装通过。
+        """
+        try:
+            status = verify_authenticode(path)
+        except PrintError as exc:
+            status = SignatureStatus(
+                path=path,
+                file_exists=os.path.isfile(path),
+                verification=VerificationStatus.NOT_VERIFIABLE,
+                failure_reason=exc.user_message,
+                is_msi=path.lower().endswith(".msi"),
+            )
+        self._signature = status
+        self.signature_label.setText(describe_signature_status(status))
+        blocked, _reason = should_block_elevation(status)
+        if blocked:
+            self.btn_run.setEnabled(False)
+            self.guard_label.setText(elevation_blocked_message(status))
+        else:
+            # 签名有效≠文件绝对安全：放行也必须保留官方来源核对提示。
+            self.btn_run.setEnabled(True)
+            self.guard_label.setText(SIGNED_OK_CAUTION)
 
     def _run_elevated(self):
         path = getattr(self, "installer_path", "")
         if not path:
             return
+        # 防御性复核：即便面板已放行，elevate_process 内部仍会再跑一次签名闸门。
         try:
             outcome = elevate_process(path, [])
         except PrintError as exc:
             self.result_label.setText(exc.user_message)
             return
         text = {
+            ElevationResult.BLOCKED:
+                f"已阻止提权：{outcome.blocked_reason or '签名未通过验证'}。"
+                "请从厂商官方渠道重新下载完整安装包，不要运行来源不明的文件。",
             ElevationResult.LAUNCHED:
                 "驱动安装程序已启动；启动成功不等于安装成功。请在安装完成后"
-                "返回点击『刷新打印机』重新枚举，并核对队列与驱动状态。",
+                "返回点击『刷新打印机』重新枚举，并核对队列与驱动状态。"
+                "（签名有效≠文件绝对安全，请再次核对官方来源。）",
             ElevationResult.REQUIRES_UAC:
                 "需要管理员/UAC 授权但未获得，请在弹出的系统授权框中点“是”。",
             ElevationResult.CANCELLED_BY_USER:
-                "用户在 UAC 授权框点了“否”，未启动安装程序。",
+                "已取消提权（用户在 UAC 授权框点了“否”），驱动未安装。",
             ElevationResult.FAILED:
                 f"启动失败（系统错误码 {outcome.error_code}），请确认文件完整。",
         }[outcome.status]

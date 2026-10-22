@@ -1,9 +1,9 @@
 # CodeLabel Studio — 打印机专项测试报告（PRINTER_TEST_REPORT）
 
-> 测试日期：第一轮 2026-10-19（打印机专项首测）；第二轮 2026-10-20（八类缺陷修复与发布验收复测）；第三轮 2026-10-22（第二轮打印审计修复：P0 线程生命周期 / P1 配置传递与缩放分级 / P3a 协议状态与 verified 守卫 + Windows 发布门禁手册）
+> 测试日期：第一轮 2026-10-19（打印机专项首测）；第二轮 2026-10-20（八类缺陷修复与发布验收复测）；第三轮 2026-10-22（第二轮打印审计修复：P0 线程生命周期 / P1 配置传递与缩放分级 / P3a 协议状态与 verified 守卫 + Windows 发布门禁手册）；第四轮 2026-10-22（1.1.0 最终发布阻断修复：P0 版本统一 / P1 Authenticode 签名闸门 / spec 核验补全）
 > 执行环境：Linux 沙箱（Python 3.12.11，PySide6 6.12.0，pytest 9.1.1，pypdf 5.9.0，reportlab 4.4.1；alembic 1.20.0 已装；python-barcode 未装）
 > 报告原则：所有数字取自真实命令输出，无据不写；未执行项明写"未实测/未执行"，绝不伪造。
-> 第一轮历史记录（456 passed/2 skipped）完整保留于第 2.1/2.2 节；第二轮（597/167）以第 2A 章与第 2.3/2.4 节为准；**第三轮（711/167，全量退出码 0）以第 2B 章为准**。
+> 第一轮历史记录（456 passed/2 skipped）完整保留于第 2.1/2.2 节；第二轮（597/167）以第 2A 章与第 2.3/2.4 节为准；第三轮（711/167，全量退出码 0）以第 2B 章为准；**第四轮（753/2 skipped 客户端 + 167 服务端，全量退出码 0）以第 2C 章为准**。
 
 ---
 
@@ -607,6 +607,165 @@ certutil -hashfile dist\installer\CodeLabelStudio-Setup-1.1.0.exe SHA256
 
 ---
 
+## 2C. 第四轮：1.1.0 最终发布阻断修复（2026-10-22）
+
+> 本章为发布前最后一轮（P0 版本统一 / P1 驱动 Authenticode 签名闸门 /
+> 本组 PyInstaller spec 核验补全）的验收记录。修复落地后自动化复测
+> **753 passed / 2 skipped（客户端，收集 755，EXIT=0）+ 167 passed
+> （服务端，EXIT=0，1 条第三方 anyio 告警）**；Windows 构建、真实设备
+> 本轮**均未执行**，按五级标签如实标注，不把"自动化通过"写成"构建通过"
+> 或"真机已验证"，不写入任何虚构哈希/构建结果/实测记录。
+
+### 2C.1 本轮执行命令与真实结果（2026-10-22，本环境实测）
+
+```
+$ QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q
+753 passed, 2 skipped in 2.85s        （客户端，收集 755 项；0 failed 0 error；退出码 EXIT=0；多次连跑结果稳定）
+
+$ python3 -m pytest tests_server/ -q
+167 passed, 1 warning in 36.00s      （服务端，收集 167 项；0 skipped；退出码 EXIT=0）
+```
+
+- 客户端 2 项 skip 与前三轮完全相同（`-rs` 原文）：
+  `test_calibration.py:226`「pdf_render 已就绪，缺失分支不再适用」（按设计
+  skip）；`test_encoder.py:65`「python-barcode 未安装，跳过第三方交叉验证」
+  （可选库缺失，非缺陷）。
+- 服务端唯一 warning 仍为 starlette `testclient.py:37` 的 anyio
+  DeprecationWarning（第三方框架，与业务无关）。
+- 较第三轮（711 passed / 2 skipped）净增 42 项 passed，全部来自 P1 新增
+  `tests/test_driver_signature.py`（42 项）；既有 `test_driver_installer.py`
+  仍为 104 passed，无断言删改。
+
+### 2C.2 P0：版本统一（引用 BUILD_REPORT，本组不改）
+
+- P0 已把 `client/__init__.py` `__version__` 由 `1.0.0` 统一为 `1.1.0`
+  （git diff 实测：仅第 3 行一处版本字符串变更）。
+- 版本一致性矩阵以 P0 维护的 `docs/BUILD_REPORT.md` 7.4 节为准：安装器
+  `MyAppVersion/AppVersion`、应用显示版本（设置→关于，动态读 `__version__`
+  无独立硬编码）、客户端 `__version__`、安装包文件名四处同为 `1.1.0`；
+  服务端在线 API 版本与桌面客户端为两条独立口径，本轮不在统一范围。
+- 本组未修改 BUILD_REPORT / README / FINAL_AUDIT（P0 负责）。
+
+### 2C.3 P1：驱动安装包 Authenticode 签名闸门（引用测试覆盖清单）
+
+**落地事实（P1 文件，本组不改）**：新增 `client/printing/authenticode.py`
+（`WinVerifyTrust` 惰性封装，EXE/MSI 分 SIP 验证，结果映射
+`VerificationStatus`：OK / UNSIGNED / INVALID / NOT_VERIFIABLE /
+UNSUPPORTED_EXTENSION）；`driver_installer.elevate_process` 提权前默认先过
+签名闸门，未签名/无效/无法验证/类型不支持 → `ElevationResult.BLOCKED`
+并携带 `blocked_reason`；`skip_signature_check=True` 仅用于显式测试/高级
+排障，UI 不暴露，且即使置真也不绕过非 Windows 平台守卫；`print_export.py`
+文件选择后先刷新签名状态标签。
+
+**`tests/test_driver_signature.py`（42 项，全部 passed）覆盖清单**：
+
+| 分组 | 代表用例 | 覆盖点 |
+|---|---|---|
+| 安装包类型识别与命令拼装 | `test_installer_kind_detection_case_insensitive`、`test_exe_path_with_spaces_and_chinese_preserves_tokens`、`test_msi_path_with_chinese_directory_uses_msiexec_i` | exe/msi 大小写识别；路径含空格/中文按 token 保留；MSI 走 `msiexec /i` |
+| 参数注入防护 | `test_malicious_args_are_plain_list_items_no_injection`、`test_msi_malicious_args_pass_through_as_plain_tokens`、`test_none_and_blank_args_normalized_away`、`test_none_args_and_empty_path` | 恶意参数仅作普通列表项，无 shell 拼接/注入；None/空串归一 |
+| 阻断分支 | `test_pdf_extension_unsupported_plan_blocked`、`test_missing_file_not_verifiable_blocked`、`test_status_matrix`（参数化全状态） | 非支持类型/文件缺失/各验证状态 → BLOCKED |
+| 状态文案诚信 | `test_ok_reason_is_official_source_caution_not_blanket_safe`、`test_blocked_reasons_are_human_readable`、`test_describe_signature_status_includes_publisher_path_reason`、`test_blocked_message_mentions_status_and_reason`、`test_ok_describe_shows_publisher_and_caution_available` | OK 仅给"官方来源"谨慎提示而非 blanket safe；阻断信息含状态与原因 |
+| MSI 静默旗标剥离 | `test_msi_strips_silent_flags_but_keeps_visible_args`、`test_no_qn_silent_flag_anywhere_in_msi_plan`、`test_build_parameters_msi_i_quoted_path_no_shell_join` | 剥离 `/qn` 等静默旗标，保留可见参数，无 shell join |
+| 提权结果映射 | `test_map_elevation_outcome`、`test_blocked_outcome_carries_reason`、`test_launched_outcome_has_no_blocked_reason` | ShellExecuteW 返回码 → 四态+BLOCKED；LAUNCHED 不带阻断原因 |
+| 平台守卫（Linux） | `test_authenticode_unavailable_on_linux`、`test_verify_authenticode_raises_on_linux`、`test_verify_authenticode_empty_path_returns_not_verifiable`、`test_elevate_process_raises_on_linux_back_compat_positional`、`test_elevate_process_guard_blocks_even_with_skip_flag_on_linux` | Linux 无 wintrust 明确抛错/不可验证；平台守卫连 skip 旗标也不绕过 |
+
+### 2C.4 本组：CodeLabelStudio.spec 核验对照表（已含 / 本次补充）
+
+> 原则：只加不删，既有条目与 `datas`/`excludes`/EXE 段原样保留；核验基于
+> 源码静态 import 与条件导入点逐条比对，未执行 PyInstaller（Linux 无法产出
+> Windows 产物），PYZ 内核对为 **④ 待 Windows**。
+
+**A. 核验时已含（本轮未改动）**
+
+| 类别 | spec 既有声明 |
+|---|---|
+| 既有条码/DB/授权 | `client.barcode.encoder/checkdigit/renderer/svg/csvio`、`client.database.db`、`client.licensing.client_license` |
+| 打印契约/核心 | `client.printing.capabilities`、`client.printing.errors`、`client.printing.job`、`client.printing.pdf` |
+| Windows/Qt 后端 | `client.printing.windows_print`、`client.printing.qt_print`、`client.printing.pdf_render`、`win32print`、`win32api`、`PySide6.QtPdf` |
+| 校准/配置/驱动指引 | `client.printing.calibration`、`client.printing.config_store`、`client.printing.driver_installer` |
+| 协议适配器（6） | `adapters.zpl/tspl/cpcl/universal/registry/transports` |
+
+**B. 本次补充（14 条，全部为新增，无删除）**
+
+| # | 补充条目 | 补充原因（源码依据） |
+|---|---|---|
+| 1 | `client.printing.units` | 静区 mm↔模块唯一换算/纸张定向，被 calibration/pdf/scale_policy 引用，原 spec 缺 |
+| 2 | `client.printing.preview` | `compute_layout/fit_barcode`，被 pdf.py/print_export.py 引用，原 spec 缺 |
+| 3 | `client.printing.print_session` | `PrintJobSession` 并发锁/句柄/临时文件生命周期，被 print_export.py 引用，原 spec 缺 |
+| 4 | `client.printing.scale_policy` | P1b 三级分级纯函数，被 print_export.py 引用，原 spec 缺 |
+| 5 | `client.printing.adapters.base` | 适配器抽象基座，被三协议 import，原 spec 缺 |
+| 6 | `client.printing.adapters._common` | 统一校验 `collect_common_issues`，被三协议 import，原 spec 缺 |
+| 7 | `client.ui.printer_setup` | `--printer-setup` 在 `client/app/main.py` 函数内惰性导入，模块图可能漏，显式声明 |
+| 8 | `client.ui.pages.print_export` | 打印导出页面；pages 包以 try/except 容错导入，显式声明防遗漏 |
+| 9 | `client.ui.pages.print_export_logic` | 打印纯逻辑（resolve_render_params 等），被前两者引用，显式声明 |
+| 10 | `pypdf` | `pdf_render.py` 条件导入 `PdfReader`，原 spec 缺 |
+| 11 | `reportlab` | `pdf.py`/`calibration.py` 条件导入 `reportlab.pdfgen`/`reportlab.lib.units`，原 spec 缺 |
+| 12 | `pywintypes` | `windows_print.py` 条件导入（与 win32print 同组），原 spec 缺 |
+| 13 | `PySide6.QtPrintSupport` | `qt_print.py` 条件导入 `QPrinter/QPrinterInfo`，任务点名要求，原 spec 缺（QtPdf 已含） |
+| 14 | `client.printing.authenticode` | P1 新增签名验证模块，被 driver_installer 静态再导出，显式声明防遗漏 |
+
+**C. 核验后明确不加入（附理由）**
+
+| 项 | 处理 | 理由 |
+|---|---|---|
+| `alembic` / `server/` / `admin/` | **不打包** | 服务端组件；`client/` 与 `run_client.py` 零引用（grep 实测），客户端 EXE 不含服务端迁移与后台 |
+| `python-barcode` | 不加入 | 可选第三方交叉验证库（requirements 中注释）；编码核心为内置 `client.barcode.encoder` |
+| `Pillow` | 不加入 | 可选高质量图像路径，requirements 注释，非打印闭环必需 |
+| `client.printing.templates`、`client.printing.template_service` | 不重复声明 | 被已声明模块 / `client/ui/context.py` 静态引用，模块图可达 |
+| 资源文件 `datas` | 保持 `[('client/assets','client/assets')]` | `client/assets` 仅含 README.md 占位，无二进制资产；按既有现状不臆改 |
+
+**D. Windows 打包自检（待 Windows，本环境未执行）**
+
+```bat
+python -m PyInstaller CodeLabelStudio.spec --noconfirm --clean
+python -m PyInstaller.utils.cliutils.archive_viewer dist\CodeLabelStudio.exe
+```
+
+- 在 archive viewer 逐条核对 B 组 14 条与 A 组既有模块存在；启动 EXE、以
+  `--printer-setup` 打开向导、打开打印页，无 `ModuleNotFoundError`。
+- 完整步骤、产物核对与历史 `scripts\build_client.bat` 列表差异提示见
+  `docs/PRINTER_INSTALLATION.md` 第 10 节。**PyInstaller 未在本环境运行，
+  产物/体积/哈希全部不存在，禁止回填。**
+
+### 2C.5 第四轮五级状态区分表
+
+> 五级定义同 2A.2 / 2B.6：① 自动化通过；② Windows 构建通过；
+> ③ 真实设备实测；④ 尚未实测；⑤ 尚未实现。
+
+| 事项 | 本轮实际级别 | 依据 / 待办 |
+|---|---|---|
+| P0 版本统一（`__version__`=1.1.0，四处同源） | **① 自动化通过（文本/源码核对）** | git diff 实测；矩阵见 BUILD_REPORT 7.4 |
+| P1 Authenticode 签名闸门（类型识别/注入防护/阻断/文案/旗标剥离/守卫） | **① 自动化通过** | `test_driver_signature` 42 项 + 既有 `test_driver_installer` 104 项 |
+| spec hiddenimports 核验补全（2C.4 对照表） | **① 自动化通过（源码清单/语法核验）**；PYZ 内核验 ④ | 未执行 PyInstaller |
+| 客户端全量回归 | **① 自动化通过** | 753 passed / 2 skipped，收集 755，EXIT=0（连跑两次稳定） |
+| 服务端全量回归 | **① 自动化通过** | 167 passed / 0 skipped，1 warning，EXIT=0 |
+| **1.1.0 Windows 构建（exe/便携包/安装包）** | **⑤ 尚未实现（未构建）+ ④ 尚未实测** | Linux 无 PyInstaller win 产物/ISCC；命令见 2C.4-D 与安装手册第 10 节 |
+| 真实队列枚举/提交/取消/查询、1:1 卡尺复核、协议设备出纸、TCP 9100 连通 | **④ 尚未实测** | 无 Windows 队列、无设备 |
+| 签名闸门真机交互（选择未签名/无效包看 BLOCKED、官方签名包放行、UAC） | **④ 尚未实测** | Linux 无 wintrust；守卫与分支逻辑已自动化 |
+| warn 缩放确认对话框真机点击、安装向导三页交互、`--printer-setup` 向导 | **④ 尚未实测** | 离屏/默认分支已测，真实桌面未点 |
+| **USB 私有直连 / 蓝牙 SPP·BLE / LPR** | **⑤ 尚未实现（按设计未做）** | 一律 `TRANSPORT_NOT_IMPLEMENTED`，不伪装可用 |
+| ③ 真实设备实测 | **本轮 0 项达到** | 无任何型号经真实设备测试，COMPATIBILITY 7.1 表全部"未实测" |
+| ② Windows 构建通过 | **本轮 0 项达到** | 1.1.0 未构建 |
+
+### 2C.6 本轮"尚未实测"与"尚未实现"清单（禁止写成已验证）
+
+**④ 尚未实测（代码/清单就绪，目标环境未验证）**：
+
+1. PyInstaller 构建与 PYZ 模块核对、EXE 启动冒烟（2C.4-D）；
+2. 真实队列枚举/提交/取消/查询（EnumPrinters/OpenPrinter/SetJob/GetJob）；
+3. 1:1 物理出纸卡尺复核（模块宽/静区/整体尺寸），PDF 正确 ≠ 物理正确；
+4. ZPL/TSPL2/CPCL 真实设备出纸、TCP 9100 真实连通与出纸；
+5. Authenticode 闸门真机：未签名/无效包 BLOCKED 文案、官方签名包放行、
+   UAC 提权全过程、启动成功≠安装成功的刷新闭环；
+6. 安装向导（数据目录页/只读检测页/驱动可选页）与应用内检测/参数/校准
+   三页真实交互；
+7. 覆盖升级 1.0.0→1.1.0 数据保留核对、卸载保留/清理两分支（安装手册 11/12）。
+
+**⑤ 尚未实现（按设计未做）**：USB 私有裸协议直连、蓝牙 SPP/BLE 裸直连、
+LPR（RFC 1179）；数字签名/自动更新；均明确报错或不在规格内，不伪装可用。
+
+---
+
 ## 3. 十类要求覆盖点逐一说明
 
 > 每一项均注明：在哪里被覆盖、以什么形式、自动化覆盖到哪一层、
@@ -886,3 +1045,15 @@ block/warn 分级与取消选项、P3a 四态与 verified 守卫均有自动化�
 （非失败，见 1.3）。无任何型号经真实设备测试，②Windows 构建通过与
 ③真实设备实测本轮均为 0 项；硬件验收以第 4 节清单在 Windows 人工执行为准。
 第一轮 456/167 历史记录见 2.1/2.2。**
+
+**结论（第四轮 2026-10-22，最新以此为准）：自动化 753 passed / 2 skipped
+（客户端，收集 755，EXIT=0，连跑两次稳定，无 QThread Destroyed/abort）+
+167 passed（服务端，EXIT=0，1 条第三方 anyio 告警）全部通过，0 failed
+0 error；2 项跳过为已说明的环境/设计原因。P0 版本统一为 1.1.0（矩阵见
+BUILD_REPORT 7.4）；P1 Authenticode 签名闸门 42 项新增测试全过；本组
+完成 spec 核验并只补不删 14 条 hiddenimports（见 2C.4）。②Windows 构建
+通过与 ③真实设备实测本轮均为 0 项：1.1.0 未构建、无任何型号经真机测试；
+USB/蓝牙裸直连、LPR 为 ⑤尚未实现。Windows 构建/自检按 2C.4-D 与
+PRINTER_INSTALLATION 第 10 节执行，真机逐型号登记 PRINTER_COMPATIBILITY
+7.1 空表。第三轮 711/167、第二轮 597/167、第一轮 456/167 历史记录见
+2B / 2A / 2.1-2.4。**

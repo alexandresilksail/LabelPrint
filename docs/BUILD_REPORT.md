@@ -195,6 +195,47 @@ certutil -hashfile dist\installer\CodeLabelStudio-Setup-1.1.0.exe SHA256
 | 绿色便携包 | `dist/CodeLabelStudio-Portable.zip` | 待 Windows 构建后计算并回填 |
 | Windows 安装包 | `dist/installer/CodeLabelStudio-Setup-1.1.0.exe` | 待 Windows 构建后计算并回填 |
 
+### 7.4 版本一致性矩阵（2026-10-22 第四轮核对，代码/文本级）
+
+> 本矩阵仅核对**源码与脚本中的版本声明**；1.1.0 产物尚未构建，
+> 不代表已安装运行的实际版本。三处版本声明同源，安装包文件名由
+> `OutputBaseFilename` 拼接 `MyAppVersion` 自动生成，无第二处硬编码。
+
+| 维度 | 1.1.0 值（当前源码） | 出处 |
+|---|---|---|
+| 安装器版本（`MyAppVersion` / `AppVersion`） | `1.1.0` | `installer/codelabel.iss` 第 12 行 `#define MyAppVersion "1.1.0"`、第 19 行 `AppVersion={#MyAppVersion}` |
+| 应用显示版本（设置 → 关于对话框） | `1.1.0` | `client/__init__.py` `__version__` 经 `client/ui/pages/settings.py` 第 64 行动态展示，无独立硬编码 |
+| 客户端 `__version__` | `1.1.0` | `client/__init__.py` 第 3 行（本轮由 `1.0.0` 统一为 `1.1.0`） |
+| 安装包文件名 | `CodeLabelStudio-Setup-1.1.0.exe` | `installer/codelabel.iss` 第 25 行 `OutputBaseFilename=CodeLabelStudio-Setup-{#MyAppVersion}`，随版本号自动拼接 |
+
+历史对照（**存档，不反映当前源码**）：
+
+| 维度 | 1.0.0 历史构建（2026-10-18） | 说明 |
+|---|---|---|
+| 安装器版本 / 应用显示版本 / `__version__` / 安装包文件名 | `1.0.0` / `1.0.0` / `1.0.0` / `CodeLabelStudio-Setup-1.0.0.exe` | 打印专项改造前产物，仅存档；见第 1–6 节 |
+
+补充说明（非桌面版本口径）：
+
+- `server/main.py` 中 FastAPI `version="1.0.0"` 与根路径健康检查的
+  `version` 属于**在线 API 服务**自身的版本声明，与桌面客户端发布版本
+  是两条独立口径；本轮不在桌面版本统一范围内，未改动，由维护者按服务端
+  发布节奏单独决定是否提升。
+- 仓库无 `pyproject.toml` / `setup.cfg` / `setup.py`，`CodeLabelStudio.spec`
+  与 `requirements.txt` 不含版本号，故除上表四处外无第二处需对齐的版本源。
+
+### 7.5 git 标签策略（2026-10-22）
+
+- 当前仓库 **git 无任何 tag**。
+- `v1.1.0` 标签**应在 Windows 构建成功、真机验收通过后，由维护者创建并推送**；
+  本 Linux 沙箱**禁止执行任何 git 写操作（含打 tag、commit、push）**，
+  当前不创建、不推送标签。
+- 标签创建示例（维护者在验收通过后的本地环境执行，仅供记录，本轮未执行）：
+
+```bat
+git tag -a v1.1.0 -m "1.1.0: 打印专项改造（通用队列/PDF 1:1/校准/ZPL·TSPL·CPCL 协议链路）"
+git push origin v1.1.0
+```
+
 ## 8. 打包内容核对（1.1.0，仅核对未改动 spec/requirements）
 
 ### 8.1 CodeLabelStudio.spec 已声明的打印 hiddenimports

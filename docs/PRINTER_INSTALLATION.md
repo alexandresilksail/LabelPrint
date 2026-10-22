@@ -13,9 +13,10 @@
   `docs/PRINTER_TEST_REPORT.md` 第 2B.7 节；构建命令与 SHA-256 表另见
   `docs/BUILD_REPORT.md` 第 7 节。本文不重复罗列命令，不提供任何未构建
   产物的校验和。
-- 2026-10-22 第三轮自动化复测：客户端 711 passed / 2 skipped（EXIT=0）、
-  服务端 167 passed（EXIT=0）；这仅代表逻辑/守卫在 Linux 通过，**不代表
-  1.1.0 已构建或已在真机验证**。
+- 2026-10-22 第四轮自动化复测：客户端 753 passed / 2 skipped（收集 755，
+  EXIT=0）、服务端 167 passed（EXIT=0）；这仅代表逻辑/守卫在 Linux 通过，
+  **不代表 1.1.0 已构建或已在真机验证**。第三轮 711/167 历史见
+  `docs/PRINTER_TEST_REPORT.md` 2B。
 
 ## 1. 应用安装（无需管理员权限）
 
@@ -171,5 +172,128 @@ Get-Printer | Format-Table -AutoSize Name,DriverName,PortName,PrinterStatus
 | 失败恢复流程（卸载残留 → 重启 → 官方源重装 → 队列恢复） | ④ 尚未实测 | 需真实失败环境演练 |
 | 安全红线（不捆绑/不自动安装/不关闭 DSE/不改组策略） | ① 自动化通过（代码落实）/ ④ 异常路径未实测 | 无签名旁路、无 `bcdedit` 调用 |
 | 1.1.0 Windows 安装包构建 | ④ 尚未实测（未构建）+ ⑤ 尚未实现（未构建） | Linux 沙箱无 ISCC；完整发布门禁手册见 PRINTER_TEST_REPORT.md 2B.7，构建命令见 BUILD_REPORT.md 第 7 节 |
+| spec hiddenimports 清单核验与补充（第四轮） | ① 自动化通过（源码清单/语法核验）/ ④ 尚未实测（PYZ 核对与启动冒烟待 Windows） | 见本文第 10 节与 PRINTER_TEST_REPORT 第四轮对照表 |
+| 覆盖升级数据保留核对（1.0.0→1.1.0） | ④ 尚未实测 | 清单见第 11 节，需真实旧版机器执行 |
+| 卸载保留/清理两分支 | ④ 尚未实测 | 见第 12 节 |
+| 安装页/设置向导人工交互（检测页/驱动页/校准页/`--printer-setup`） | ④ 尚未实测 | 见第 13 节，需 Windows + 真机 |
 | 第三轮自动化（P0/P1a/P1b/P3a） | ① 自动化通过 | 711 passed/2 skipped（EXIT=0）+ 167 passed（EXIT=0）；硬件/构建仍未执行 |
+| 第四轮自动化（P0 版本统一 / P1 签名闸门 / spec 补全） | ① 自动化通过 | 753 passed/2 skipped（收集 755，EXIT=0）+ 167 passed（EXIT=0）；新增 test_driver_signature 42 项；硬件/构建仍未执行 |
 | 数字签名、自动更新 | ⑤ 尚未实现 | 无证书 / 规格未要求 |
+
+---
+
+## 10. Windows 打包与产物自检（`CodeLabelStudio.spec`；待 Windows，本环境未执行）
+
+> 级别标注：spec 清单与源码对照为 **① 自动化通过（文本/语法核验）**；真实
+> PyInstaller 产物、PYZ 模块核对与启动冒烟为 **④ 尚未实测**（Linux 沙箱无
+> Windows、无法产出 onefile 产物，本环境未执行任何打包命令）。
+
+### 10.1 构建命令（真实 Windows 10/11 x64 执行）
+
+```bat
+REM 仓库根目录；spec 已固化全部打印 hiddenimports（对照表见 PRINTER_TEST_REPORT 第四轮）
+python -m PyInstaller CodeLabelStudio.spec --noconfirm --clean
+REM → dist\CodeLabelStudio.exe（onefile 单文件）
+```
+
+- 依赖先行：`pip install -r requirements.txt`（`PySide6`、`ReportLab`、
+  `pypdf`、`pyinstaller`；`pywin32` 仅 win32 安装）。
+- 历史脚本 `scripts\build_client.bat` 使用 CLI `--hidden-import` 列表，为打印
+  专项早期版本，**未含第四轮新增模块**；若改用 bat 必须先把第 10.2 节清单
+  同步进 bat，否则以本 spec 直接构建为准。本环境未修改该脚本。
+
+### 10.2 产物核对步骤（逐条执行，任一缺失即未通过）
+
+1. **启动冒烟**：双击 `dist\CodeLabelStudio.exe`，7 个页面可打开；首次启动
+   自动创建数据目录；stdout/stderr 无 `ImportError` / `ModuleNotFoundError` /
+   traceback。
+2. **PYZ 模块清单核对**（archive viewer 逐条检索，不要求运行期导入）：
+
+```bat
+python -m PyInstaller.utils.cliutils.archive_viewer dist\CodeLabelStudio.exe
+```
+
+   核对以下模块名存在于 PYZ：`client.printing.units`、`client.printing.preview`、
+   `client.printing.print_session`、`client.printing.scale_policy`、
+   `client.printing.adapters.base`、`client.printing.adapters._common`、
+   `client.printing.adapters.zpl`、`client.printing.adapters.tspl`、
+   `client.printing.adapters.cpcl`、`client.printing.adapters.universal`、
+   `client.printing.adapters.registry`、`client.printing.adapters.transports`、
+   `client.printing.authenticode`、
+   `client.ui.printer_setup`、`client.ui.pages.print_export`、
+   `client.ui.pages.print_export_logic`、`PySide6.QtPdf`、
+   `PySide6.QtPrintSupport`、`pypdf`、`reportlab`、`win32print`、`win32api`、
+   `pywintypes`。
+3. **运行期自检**：以 `--printer-setup` 启动设置向导、打开打印页，确认无
+   `ModuleNotFoundError`；空能力列表时打印按钮按设计禁用。
+4. 自检完成前，产物体积、SHA-256 一律"待 Windows 构建后计算"，禁止编造回填。
+
+## 11. 覆盖升级（1.0.0 → 1.1.0）与数据保留核对（待 Windows 实测）
+
+> 级别标注：升级/保留逻辑由安装脚本与数据目录约定保证（文本级核对 ①）；
+> 在真实旧版机器上的覆盖安装与逐项比对为 **④ 尚未实测**。
+
+### 11.1 升级前快照清单（在装有旧版且有业务数据的机器上记录）
+
+数据目录默认 `%LOCALAPPDATA%\CodeLabelStudio\data`（安装时可自选；以 exe
+同级 `data_dir.txt` 或注册表 `HKCU\Software\CodeLabelStudio\DataDir` 为准）：
+
+| 文件 / 子目录 | 内容 | 升级前记录（大小 / 修改时间 / 行数） |
+|---|---|---|
+| `codelabel.db` | 本地 SQLite 库（模板、记录、操作日志） | |
+| `session.json` | 会话 | |
+| `license.json` | 授权缓存 | |
+| `printer_configs\` | 每台打印机一份 JSON（偏移 / 静区 / 份数 / DPI / 质量） | |
+
+记录方法：资源管理器登记大小与修改时间；`codelabel.db` 用 SQLite 工具记录
+各表行数；`printer_configs` 逐文件登记。
+
+### 11.2 升级执行与升级后核对
+
+1. 运行 `CodeLabelStudio-Setup-1.1.0.exe` 覆盖安装，**不改动数据目录选择**；
+2. 重启应用，按 11.1 清单逐项比对：文件仍在、大小/行数一致；打印配置
+   （偏移/静区/份数/DPI）原样加载，模板与历史记录可见；
+3. 任一文件缺失或配置丢失 → 结论未通过，停止发布并回查。
+
+## 12. 卸载：保留数据 / 清理数据（待 Windows 实测）
+
+控制面板卸载时弹窗：**"是否同时删除本地数据（数据库、会话、授权缓存）？
+选择'是'将删除数据目录，选择'否'将保留。"** 两个分支各执行一次并按
+11.1 清单对照：
+
+- **选"否"（保留数据）**：数据目录完整保留（`codelabel.db`、`session.json`、
+  `license.json`、`printer_configs\`）；重装后数据仍在。
+- **选"是"（清理数据）**：数据目录整体删除（含 `printer_configs\`）；
+  `HKCU\Software\CodeLabelStudio` 空键清理。
+
+## 13. 打印设置向导 / 安装页人工验收步骤（待 Windows + 真机）
+
+> 级别标注：页面与文案为脚本/源码级核对（①）；真实桌面交互、队列枚举与
+> 出纸为 **④ 尚未实测**。
+
+### 13.1 安装向导页（ISCC 编译后执行）
+
+1. **数据目录页**：默认 `%LOCALAPPDATA%\CodeLabelStudio\data`，可改；留空
+   报错拦截。
+2. **打印环境检测页（只读）**：`Get-Printer` 列出队列 / 驱动 / 端口 / 状态；
+   空列表提示"未检测到"；读取失败不阻断安装；**不安装任何驱动**。
+3. **打印机驱动（可选）说明页**：官方渠道指引文案；无下载、无安装；
+   声明 UAC 提权由用户自行触发、不关闭驱动签名检查（DSE）。
+4. 末页勾选"完成后打开打印机设置向导"→ 应用以 `--printer-setup` 参数启动。
+
+### 13.2 应用内设置向导（`--printer-setup`，检测 / 参数 / 校准三标签页）
+
+1. **检测页**：「刷新打印机」枚举（win32print + Qt 两路合并）并选机；驱动
+   六态展示；「驱动安装指引」对话框只给官方渠道（不编造 URL）；明示"启动
+   安装程序 ≠ 安装成功"，安装完成后返回本页刷新复核。
+2. **参数页**：纸张 / DPI / 份数 / 质量 / 偏移 / 静区按打印机名独立保存，
+   切换打印机自动加载。
+3. **校准页**：渲染标准测试页（页面物理尺寸 = 目标纸张）→ 卡尺复核标尺、
+   模块宽度与静区 → 微调偏移 x/y 重新打印直至位置居中 → 扫码枪实测可读。
+
+### 13.3 真机登记
+
+逐型号验收结果登记到 `docs/PRINTER_COMPATIBILITY.md` 第 7.1 节空表
+（编号 R-01、R-02……）；单台设备完整操作步骤见
+`docs/PRINTER_TEST_REPORT.md` 第 4 节与 2B.8 空表。**只有真实测试通过并
+留档的型号才可在兼容性文档标 L3 已验证**；当前全部为未实测。

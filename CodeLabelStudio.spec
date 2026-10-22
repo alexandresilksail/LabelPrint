@@ -13,10 +13,23 @@ a = Analysis(
                    'client.printing.qt_print', 'client.printing.pdf_render',
                    'client.printing.calibration', 'client.printing.config_store',
                    'client.printing.driver_installer',
+                   # 第四轮补充：P1 新增 Authenticode 签名验证模块（被 driver_installer 静态再导出，显式声明防遗漏）
+                   'client.printing.authenticode',
+                   # 第四轮补充（2026-10-22，只加不删）：静区/偏移单位换算、预览、会话锁、缩放分级
+                   'client.printing.units', 'client.printing.preview',
+                   'client.printing.print_session', 'client.printing.scale_policy',
                    'client.printing.adapters.zpl', 'client.printing.adapters.tspl',
                    'client.printing.adapters.cpcl', 'client.printing.adapters.universal',
                    'client.printing.adapters.registry', 'client.printing.adapters.transports',
-                   'win32print', 'win32api', 'PySide6.QtPdf'],
+                   # 第四轮补充：适配器基座与公共校验（base/_common，被三协议静态引用）
+                   'client.printing.adapters.base', 'client.printing.adapters._common',
+                   # 第四轮补充：打印导出页面 / 纯逻辑 / 设置向导（--printer-setup 为函数内惰性导入）
+                   'client.ui.printer_setup', 'client.ui.pages.print_export',
+                   'client.ui.pages.print_export_logic',
+                   # 第四轮补充：条件导入的第三方 PDF 依赖（pdf.py/calibration.py 用 reportlab；pdf_render.py 用 pypdf）
+                   'pypdf', 'reportlab',
+                   'win32print', 'win32api', 'pywintypes',
+                   'PySide6.QtPdf', 'PySide6.QtPrintSupport'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

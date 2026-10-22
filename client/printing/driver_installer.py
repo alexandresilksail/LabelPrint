@@ -9,11 +9,13 @@
   **绝不使用 ``pnputil /add-driver`` 安装未签名驱动**、
   **不修改组策略或任何 Windows 安全设置**。
 - ``elevate_process`` 仅用于“启动用户自己从官方渠道下载好的驱动安装程序”，
-  由 Windows UAC 自身完成提权授权，应用不绕过、不关闭任何安全校验。
+  提权前先做 Authenticode 签名验证：未签名/无效/无法验证/类型不支持**默认阻止
+  提权**，由 Windows UAC 自身完成提权授权，应用不绕过、不关闭任何安全校验，
+  不静默提权。签名有效也不代表文件绝对安全，UI 必须提示核对官方来源。
 
-纯逻辑（状态决策、指引文案、官方来源表）在任意平台可导入、可测试；
-只有 Windows 专属的 ``detect_driver_state_windows`` / ``elevate_process``
-在非 Windows 上抛出 ``PrintError(UNSUPPORTED_PLATFORM)``。
+纯逻辑（状态决策、签名闸门、命令计划、指引文案、官方来源表）在任意平台可
+导入、可测试；只有 Windows 专属的 ``detect_driver_state_windows`` /
+``elevate_process`` 在非 Windows 上抛出 ``PrintError(UNSUPPORTED_PLATFORM)``。
 """
 
 from __future__ import annotations
@@ -22,6 +24,18 @@ import sys
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .authenticode import (  # noqa: F401  (纯逻辑再导出，供调用方/测试统一入口)
+    SIGNED_OK_CAUTION,
+    SignatureStatus,
+    VerificationStatus,
+    build_shellexec_parameters,
+    describe_signature_status,
+    elevation_blocked_message,
+    map_elevation_outcome,
+    parse_elevate_request,
+    should_block_elevation,
+    verify_authenticode,
+)
 from .errors import PrintError
 
 
@@ -348,44 +362,76 @@ class ElevationResult(str, Enum):
 
     - LAUNCHED          : ShellExecuteW 成功发起（不代表安装成功）。
     - REQUIRES_UAC      : 需要管理员/UAC 授权但当前未获得。
-    - CANCELLED_BY_USER : 用户在 UAC 弹窗点了“否”。
+    - CANCELLED_BY_USER : 用户在 UAC 弹窗点了“否”（驱动未安装，不视为成功）。
     - FAILED            : 启动失败（附系统错误码，见 ElevationOutcome.error_code）。
+    - BLOCKED           : 签名闸门拦截（未签名/无效/无法验证/类型不支持），
+                          未发起任何提权；原因见 ``ElevationOutcome.blocked_reason``。
     """
 
     LAUNCHED = "launched"
     REQUIRES_UAC = "requires_uac"
     CANCELLED_BY_USER = "cancelled_by_user"
     FAILED = "failed"
+    BLOCKED = "blocked"
+
+
+# ShellExecuteW 纯字符串结果 → ElevationResult（与 authenticode.map_elevation_outcome 对齐）
+_KIND_TO_RESULT = {
+    "launched": ElevationResult.LAUNCHED,
+    "requires_uac": ElevationResult.REQUIRES_UAC,
+    "cancelled_by_user": ElevationResult.CANCELLED_BY_USER,
+    "failed": ElevationResult.FAILED,
+}
 
 
 @dataclass(frozen=True)
 class ElevationOutcome:
-    """提权结果 + 附加系统错误码（ShellExecuteW 返回值，<=32 为错误）。"""
+    """提权结果 + 附加系统错误码（ShellExecuteW 返回值，<=32 为错误）。
+
+    ``blocked_reason`` 仅在 ``status == BLOCKED`` 时非空，记录签名闸门拦截原因。
+    """
 
     status: ElevationResult
     error_code: int | None = None
+    blocked_reason: str | None = None
 
 
 def elevate_process(
-    target_exe: str,
-    args: list[str],
+    path: str,
+    args: list[str] | tuple[str, ...] | None = None,
+    *,
+    skip_signature_check: bool = False,
     allow_unsigned: bool = False,
 ) -> ElevationOutcome:
     """以 ``runas``（触发 Windows UAC）启动用户自备的官方驱动安装程序。
+
+    提权前闸门（默认流程，不可被普通参数关闭）：
+
+    1. ``verify_authenticode(path)`` 检查 Authenticode 签名；
+    2. ``should_block_elevation`` 决策：未签名 / 签名无效 / 无法验证 /
+       类型不支持 → 返回 ``BLOCKED``，**不发起任何提权**；
+    3. 签名 ``ok`` 才进入 UAC 提权；放行时仍携带
+       “签名有效≠文件绝对安全，请核对官方来源”的提示（由 UI 展示）。
 
     安全约束（硬编码，不可被参数关闭）：
 
     - **只用于启动用户自己从官方渠道下载好的驱动安装程序**；
       本函数不下载、不释放、不生成任何安装包。
-    - ``allow_unsigned`` 默认 ``False``：调用方未显式确认签名前，
-      不提供任何“跳过签名校验”的旁路；本函数自身也**绝不**校验/绕过签名。
+    - EXE 与 MSI 分路径启动：EXE 直接以列表参数启动；MSI 经
+      ``msiexec.exe /i <path>`` 可见安装界面启动，**绝不使用 /qn 静默**；
+      参数一律列表传递、逐令牌引用，不做 shell 字符串拼接，无命令注入面。
+    - ``skip_signature_check=True`` 仅用于显式测试/高级排障，**UI 不暴露该
+      开关**；即便跳过，扩展名白名单闸门仍然生效，且不改变 UAC 授权流程。
+    - ``allow_unsigned`` 仅为兼容历史调用签名保留，**不再、也绝不构成跳过
+      签名校验的旁路**（传入 True 同样被签名闸门拦截）。
     - **绝不**调用 ``bcdedit``、**绝不**禁用驱动签名强制（DSE）、
       **绝不**执行 ``pnputil /add-driver`` 安装未签名驱动、
       **不修改组策略/注册表安全项/任何 Windows 安全设置**。
     - 提权授权完全交给 Windows UAC 弹窗：用户拒绝则返回 CANCELLED_BY_USER，
       应用不自行提权、不静默提权。
 
-    非 Windows 平台抛 :class:`PrintError(UNSUPPORTED_PLATFORM)`。
+    非 Windows 平台抛 :class:`PrintError(UNSUPPORTED_PLATFORM)`（守卫在最前，
+    即使 ``skip_signature_check=True`` 也不绕过平台守卫）。
     """
     if sys.platform != "win32":
         raise PrintError(
@@ -393,27 +439,62 @@ def elevate_process(
             resolution="UAC 提权仅存在于 Windows，本平台不可用。",
         )
 
-    target = str(target_exe or "").strip()
+    target = str(path or "").strip()
     if not target:
-        return ElevationOutcome(ElevationResult.FAILED, error_code=0)
+        return ElevationOutcome(
+            ElevationResult.FAILED, error_code=0,
+            blocked_reason="未提供安装程序路径。",
+        )
 
-    # 安全闸门：默认拒绝未签名假设；此处不做签名检测（无系统能力保证），
-    # 仅把 allow_unsigned=False 作为调用方显式确认的记录位，不提供任何绕过手段。
+    # 历史参数名保留：它不是、也永远不会是跳过签名的旁路。
     _ = allow_unsigned
 
+    # 扩展名白名单闸门：无论是否跳过签名检查，非 .exe/.msi 一律阻止。
+    plan = parse_elevate_request(target, args)
+    if not plan.supported:
+        status = SignatureStatus(
+            path=target, file_exists=False,
+            verification=VerificationStatus.UNSUPPORTED_EXTENSION,
+            failure_reason="仅支持 .exe / .msi 安装程序。",
+        )
+        return ElevationOutcome(
+            ElevationResult.BLOCKED,
+            blocked_reason=elevation_blocked_message(status),
+        )
+
+    # 签名闸门（默认开启；skip_signature_check 仅显式测试/高级排障使用）。
+    if not skip_signature_check:
+        status = verify_authenticode(target)
+        blocked, reason = should_block_elevation(status)
+        if blocked:
+            return ElevationOutcome(
+                ElevationResult.BLOCKED, blocked_reason=reason,
+            )
+
+    # Windows 真实提权（ShellExecuteW runas；EXE/MSI 分路径，列表参数）。
+    # pragma: no cover - 仅 Windows 真机执行，Linux 测试不可达
     import ctypes  # 惰性导入，Linux 不触发
 
-    arg_line = " ".join(f'"{a}"' if " " in a else a for a in (args or []))
+    if plan.is_msi:
+        lp_file = "msiexec.exe"
+        lp_parameters = build_shellexec_parameters(plan)
+    else:
+        lp_file = plan.path
+        lp_parameters = build_shellexec_parameters(plan)
+
     ret = ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", target, arg_line, None, 1  # SW_SHOWNORMAL
+        None, "runas", lp_file, lp_parameters, None, 1  # SW_SHOWNORMAL
     )
 
-    # ShellExecuteW: 返回值 > 32 表示成功；<=32 为错误码
-    if ret > 32:
+    kind = map_elevation_outcome(ret)
+    result = _KIND_TO_RESULT[kind]
+    if result is ElevationResult.LAUNCHED:
+        # 发起成功不等于安装成功；附带官方来源提示由 UI 展示。
         return ElevationOutcome(ElevationResult.LAUNCHED, error_code=None)
-    if ret == 12:  # ERROR_CANCELLED：用户在 UAC 取消
-        return ElevationOutcome(ElevationResult.CANCELLED_BY_USER, error_code=ret)
-    if ret == 5:  # SE_ERR_ACCESSDENIED：访问被拒/需要提权
+    if result is ElevationResult.CANCELLED_BY_USER:
+        return ElevationOutcome(
+            ElevationResult.CANCELLED_BY_USER, error_code=ret)
+    if result is ElevationResult.REQUIRES_UAC:
         return ElevationOutcome(ElevationResult.REQUIRES_UAC, error_code=ret)
     return ElevationOutcome(ElevationResult.FAILED, error_code=ret)
 

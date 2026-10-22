@@ -441,6 +441,83 @@ Windows/无设备），清单见 `docs/PRINTER_TEST_REPORT.md` 第 4 节；自�
 | USB 私有直连 / 蓝牙 SPP·BLE / LPR | ⑤ 尚未实现（按设计未做） | `TRANSPORT_NOT_IMPLEMENTED` |
 | ② Windows 构建通过 / ③ 真实设备实测 | 本轮均 0 项 | — |
 
+## 8B. 第四轮：版本统一与发布口径（2026-10-22）
+
+> 本轮目标：把桌面客户端发布版本统一到 1.1.0，核对安装器/显示版本/
+> `__version__`/安装包文件名四者一致，并对稳定 AppId 下的覆盖安装升级路径
+> 做**只读代码审查**。本轮**未执行 Windows 构建、未执行任何升级/卸载实测**，
+> 不伪造升级测试结果；前三轮（第 3、4、8、8A 节）历史记录原样保留。
+
+### 8B.1 版本统一修复记录
+
+| 位置 | 修改前 | 修改后 | 说明 |
+|---|---|---|---|
+| `client/__init__.py` 第 3 行 `__version__` | `1.0.0` | `1.1.0` | 本轮唯一的版本常量改动 |
+| `client/ui/pages/settings.py` 关于框 | 已 `from ... import __version__` 动态展示 | **未改动** | 第 64 行 `f"版本 {__version__} · Python ..."` 自动联动，无独立硬编码，无需改 |
+| `installer/codelabel.iss` | `MyAppVersion "1.1.0"` | **未改动** | 此前已升至 1.1.0，本轮复核确认，不改版本逻辑 |
+
+全仓核对（grep，排除 `.git/`、`__pycache__`、历史文档）：
+
+- `client/` 下除 `__version__` 外**无其他硬编码 `1.0.0`**；
+- 仓库**无 `pyproject.toml` / `setup.cfg` / `setup.py`**，`CodeLabelStudio.spec`
+  与 `requirements.txt` 均不含版本号，无第二处需对齐的版本源；
+- `server/main.py` 的 FastAPI `version="1.0.0"` 与根健康检查 `version` 属于
+  **在线 API 服务自身版本口径**，与桌面客户端发布版本相互独立，本轮不在
+  桌面版本统一范围内，**未改动**，登记为 8B.4 未解决项；
+- `dist/SHA256SUMS.txt` 中 `CodeLabelStudio-Setup-1.0.0.exe` 的哈希为
+  2026-10-18 历史构建存档，保留不动；
+- `docs/RELEASE_CHECKLIST.md` 为 1.0.0 时代历史发布清单（文首已标注
+  "版本 1.0.0 · 构建日期 2026-10-18"），不在本轮授权改动范围内，原样存档，
+  1.1.0 清单待 Windows 构建时由维护者出具。
+
+### 8B.2 版本一致性矩阵核对（代码/文本级，产物未构建）
+
+| 维度 | 1.1.0 当前源码值 | 出处 |
+|---|---|---|
+| 安装器版本（`MyAppVersion` / `AppVersion`） | `1.1.0` | `installer/codelabel.iss` 第 12、19 行 |
+| 应用显示版本（设置 → 关于） | `1.1.0` | `client/__init__.py` → `settings.py` 动态展示 |
+| 客户端 `__version__` | `1.1.0` | `client/__init__.py` 第 3 行 |
+| 安装包文件名 | `CodeLabelStudio-Setup-1.1.0.exe` | `OutputBaseFilename=CodeLabelStudio-Setup-{#MyAppVersion}` 自动拼接 |
+
+> 完整矩阵与历史对照见 `docs/BUILD_REPORT.md` 7.4。四者同源、无第二处
+> 硬编码；1.1.0 产物尚未构建，本矩阵不代表已安装运行的实际版本。
+
+### 8B.3 AppId 升级路径只读代码审查（未实测，待 Windows 人工验证）
+
+审查对象：`installer/codelabel.iss`（全文）、`client/ui/context.py`
+`default_data_dir()`、既有单测 `test_frozen_mode_reads_data_dir_txt`。
+
+| 审查点 | 代码事实（只读） | 结论 |
+|---|---|---|
+| AppId 稳定性 | `AppId={{7E5A3C21-9B4D-4F8A-B6E2-C0DE1ABE5710}` 自脚本引入（`da1ed86`）起在 git 历史中**仅出现一次、从未改动**（`git log -p -- installer/codelabel.iss` 无修改记录），1.0.0→1.1.0 保持不变 | ✅ 同一 AppId 下 Inno 将 1.1.0 识别为同一应用的升级，"已安装程序"列表合并为一条，不会并列出现两个条目 |
+| 安装目录（DefaultDirName） | `DefaultDirName={autopf}\{#MyAppName}`、`PrivilegesRequired=lowest` 同样自引入后从未改动；按用户安装；同 AppId 覆盖安装时 Inno 沿用注册表中记录的既有安装目录 | ✅ 版本号变化不改变目录模板，覆盖安装原地替换，不另起目录 |
+| 覆盖安装触碰范围 | `[Files]` 仅 `CodeLabelStudio.exe` 与便携 zip，`Flags: ignoreversion`；`[UninstallDelete]` 仅清 `{app}\logs`、`{app}\__pycache__` | ✅ 覆盖安装只替换程序文件，不含任何删除用户数据的动作 |
+| 数据目录位置 | 默认 `%LOCALAPPDATA%\CodeLabelStudio\data`（`{localappdata}`），**在 `{app}` 之外**；安装时写 `{app}\data_dir.txt` 与注册表 `HKCU\Software\CodeLabelStudio\DataDir`；冻结态客户端 `default_data_dir()` 优先读 `data_dir.txt`（有单测覆盖） | ✅ 默认数据目录与安装目录分离，覆盖安装天然不触碰 |
+| 卸载询问保留数据 | `usUninstall` 弹窗 `mb_YESNO or MB_DEFBUTTON2`（默认"否"）；选"否" `KeepData=True` 不删；选"是"才在 `usPostUninstall` 按注册表记录的实际目录 `DelTree`，随后清注册表值/空键 | ✅ 卸载询问与数据删除逻辑完整；覆盖安装（升级）不触发 `usUninstall`，数据不受影响 |
+
+**审查观察项（如实记录，非阻断）**：自定义数据目录场景下，升级重跑安装包时
+`DataDirPage` 在 `InitializeWizard` 中只回填默认路径，**不读取注册表历史
+选择**；若用户在升级向导页直接"下一步"，`data_dir.txt` 会被重写为默认路径。
+使用**默认数据目录**（绝大多数场景）时路径一致、无影响；**曾自定义数据目录**
+的用户升级时应在数据目录页确认/重选实际目录。该项须在 Windows 真机升级时
+人工核对。
+
+> **诚信声明**：以上为静态代码审查结论。**1.0.0→1.1.0 的实际覆盖安装、
+> 数据保留、卸载询问行为，须在真实 Windows 安装器环境人工验证（待 Windows）**；
+> 本轮 Linux 沙箱未执行安装/升级/卸载，未产生任何升级测试结果，禁止把
+> 代码审查写成实测通过。
+
+### 8B.4 第四轮未解决项（接续 11.1，不重复列已闭环项）
+
+| # | 未解决项 | 级别 | 后续动作 |
+|---|---|---|---|
+| U1 | 1.1.0 exe / 便携包 / 安装包未构建，三件 SHA-256 不存在 | ⑤ 未构建 + ④ 未实测 | Windows 按 BUILD_REPORT 7.2 / 8A.2 构建后回填哈希，禁止编造 |
+| U2 | `v1.1.0` git 标签未创建（当前仓库无 tag） | 待维护者 | **Windows 构建与真机验收通过后由维护者创建并推送；本轮禁止任何 git 写操作**（见 BUILD_REPORT 7.5） |
+| U3 | `server/main.py` FastAPI `version="1.0.0"` 为独立 API 服务口径 | 待服务端发布决策 | 与桌面版本解耦，由维护者按服务端节奏单独提升，本轮不动 |
+| U4 | `docs/RELEASE_CHECKLIST.md` 仍为 1.0.0 历史清单 | 存档保留 | Windows 构建时由维护者出具 1.1.0 版本清单 |
+| U5 | 自定义数据目录升级向导页不回填历史选择（8B.3 观察项） | ④ 待 Windows 实测 | 升级验收时核对；必要时在安装器 `InitializeWizard` 读取注册表回填（属安装器改动，本轮未做） |
+| U6 | 覆盖安装升级 / 卸载询问真机行为 | ④ 待 Windows 实测 | 按 11.3 / PRINTER_TEST_REPORT.md 2B.7(e) 人工留档 |
+
 ## 9. GitHub 推送状态
 
 - 远端仓库：`github.com/alexandresilksail/LabelPrint`（分支 main）
@@ -468,6 +545,7 @@ Windows/无设备），清单见 `docs/PRINTER_TEST_REPORT.md` 第 4 节；自�
 |---|---|
 | 自动化测试（**2026-10-22 第三轮，以此为准**） | ✅ 客户端 **711 passed/2 skipped**（收集 713，**EXIT=0，连跑稳定无 Destroyed**）；服务端 **167 passed/0 skipped（EXIT=0）**；0 failed 0 error（第二轮 597/167、第一轮 456/167 历史保留于第 3 节） |
 | 第二轮打印审计修复（P0/P1a/P1b/P3a，2026-10-22） | ✅ **全部落地，可自动化部分通过**（新增 4 文件 114 项：RunLater 生命周期、静区配置传递/unapplied、缩放 block/warn 分级与取消选项、四态与 verified 守卫）；对话框真机交互/硬件/构建未实测，五级见 8A.3 |
+| 第四轮版本统一（2026-10-22） | ✅ 桌面版本口径统一为 1.1.0（`__version__`/安装器/显示/安装包文件名四者一致，见 8B.2、BUILD_REPORT 7.4）；AppId 升级路径为**只读代码审查**，升级/卸载真机行为待 Windows（8B.3/8B.4），未伪造实测 |
 | 自动化测试（2026-10-20 第二轮，历史） | ✅ 客户端 597 passed/2 skipped（收集 599）；服务端 167 passed/0 skipped；0 failed 0 error |
 | 缺陷修复轮（八类，2026-10-20） | ✅ **修复全部落地；可自动化部分通过**（份数唯一展开/纸张一致性/校准参数贯通/LabelContent 协议链路/传输诚实性 SENT 语义/PrintJobSession 均有单测；驱动启动≠成功仅非 Windows 守卫有单测，四态/UAC/刷新闭环 ④未实测；安装器 1.1.0 仅脚本文本级核对）；**硬件相关未实测**，逐项五级标注见 PRINTER_TEST_REPORT.md 第 2A.2 节 |
 | 静态扫描 8111 行 | ✅ 0 问题（2026-10-18 轮记录，第二轮未重扫） |
